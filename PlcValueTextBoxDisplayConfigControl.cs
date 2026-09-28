@@ -10,6 +10,10 @@ public sealed class PlcValueTextBoxDisplayConfigItem
     public PlcBindableValueType DataType { get; set; } = PlcBindableValueType.Int;
     public PlcValueTextBoxMode ControlMode { get; set; } = PlcValueTextBoxMode.Display;
     public int StringLength { get; set; } = 64;
+    /// <summary>仅当 <see cref="DataType"/> 为 Int 时有效：用下拉框显示数值对应的文字。</summary>
+    public bool UseIntComboMapping { get; set; }
+    /// <summary>形如「0:无 1:A串 2:B串」的对照说明；数字与 PLC 寄存器中的 Int 一致，冒号后为界面显示文案。</summary>
+    public string IntValueMappingDescription { get; set; } = string.Empty;
 }
 
 /// <summary>主页面 PlcValueTextBoxControl 显示配置。</summary>
@@ -27,6 +31,7 @@ public sealed class PlcValueTextBoxDisplayConfigControl : UserControl
         Dock = DockStyle.Fill,
         AllowUserToAddRows = false,
         AllowUserToDeleteRows = false,
+        AllowUserToResizeColumns = false,
         RowHeadersVisible = false,
         SelectionMode = DataGridViewSelectionMode.FullRowSelect,
         MultiSelect = false,
@@ -45,9 +50,18 @@ public sealed class PlcValueTextBoxDisplayConfigControl : UserControl
     private bool _canModify = true;
     private bool _editUnlocked;
 
-    public PlcValueTextBoxDisplayConfigControl()
+    public PlcValueTextBoxDisplayConfigControl() : this(null) { }
+
+    public PlcValueTextBoxDisplayConfigControl(string? storageKey)
     {
-        _configPath = Path.Combine(AppContext.BaseDirectory, ConfigFileName);
+        string fileName = ConfigFileName;
+        if (!string.IsNullOrWhiteSpace(storageKey))
+        {
+            string safeKey = string.Concat(storageKey.Where(char.IsLetterOrDigit));
+            if (!string.IsNullOrWhiteSpace(safeKey))
+                fileName = $"{Path.GetFileNameWithoutExtension(ConfigFileName)}.{safeKey}{Path.GetExtension(ConfigFileName)}";
+        }
+        _configPath = Path.Combine(AppContext.BaseDirectory, fileName);
         BuildUi();
         BindEvents();
         LoadConfig();
@@ -76,7 +90,9 @@ public sealed class PlcValueTextBoxDisplayConfigControl : UserControl
                 PlcAddress = address,
                 DataType = ParseDataType(GetCellString(row, 2)),
                 ControlMode = ParseControlMode(GetCellString(row, 3)),
-                StringLength = ParsePositiveInt(GetCellString(row, 4), 64)
+                StringLength = ParsePositiveInt(GetCellString(row, 4), 64),
+                UseIntComboMapping = GetCellBool(row, 5),
+                IntValueMappingDescription = GetCellString(row, 6)
             };
             list.Add(item);
         }
@@ -95,7 +111,9 @@ public sealed class PlcValueTextBoxDisplayConfigControl : UserControl
                 x.PlcAddress,
                 x.DataType.ToString(),
                 x.ControlMode.ToString(),
-                Math.Max(1, x.StringLength).ToString());
+                Math.Max(1, x.StringLength).ToString(),
+                x.UseIntComboMapping,
+                x.IntValueMappingDescription ?? string.Empty);
         }
         _suspendAutoSave = false;
         RaiseConfigurationsChanged();
@@ -133,13 +151,21 @@ public sealed class PlcValueTextBoxDisplayConfigControl : UserControl
             FillWeight = 18,
             DataSource = Enum.GetNames(typeof(PlcValueTextBoxMode))
         });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "字符串长度", FillWeight = 20 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "字符串长度", FillWeight = 14 });
+        _grid.Columns.Add(new DataGridViewCheckBoxColumn
+        {
+            HeaderText = "Int映射下拉",
+            FillWeight = 12,
+            ThreeState = false
+        });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "数字对照说明", FillWeight = 28 });
 
         var toolbar = new FlowLayoutPanel
         {
             Dock = DockStyle.Top,
-            AutoSize = true,
-            WrapContents = false,
+        AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            WrapContents = true,
             Padding = new Padding(0, 0, 0, 4)
         };
         toolbar.Controls.AddRange([_btnEditAuth, _btnAdd, _btnDelete, _btnSave, _btnReload]);
@@ -153,7 +179,7 @@ public sealed class PlcValueTextBoxDisplayConfigControl : UserControl
         _btnEditAuth.Click += (_, _) => ToggleEditAuth();
         _btnAdd.Click += (_, _) =>
         {
-            _grid.Rows.Add("新文本框", "MW100", PlcBindableValueType.Int.ToString(), PlcValueTextBoxMode.Display.ToString(), "64");
+            _grid.Rows.Add("新文本框", "MW100", PlcBindableValueType.Int.ToString(), PlcValueTextBoxMode.Display.ToString(), "64", false, string.Empty);
             SaveConfig();
             RaiseConfigurationsChanged();
         };
@@ -255,6 +281,12 @@ public sealed class PlcValueTextBoxDisplayConfigControl : UserControl
     private static string GetCellString(DataGridViewRow row, int index)
     {
         return (Convert.ToString(row.Cells[index].Value) ?? string.Empty).Trim();
+    }
+
+    private static bool GetCellBool(DataGridViewRow row, int index)
+    {
+        object? v = row.Cells[index].Value;
+        return v is bool b && b;
     }
 
     private static int ParsePositiveInt(string value, int fallback)

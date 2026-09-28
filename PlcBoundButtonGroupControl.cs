@@ -1,3 +1,5 @@
+using PlcConectCom.WinForms.Controls;
+
 namespace PlcConectCom.WinFormsTest;
 
 // PLC 绑定按钮组控件，支持批量地址映射与自适应排版

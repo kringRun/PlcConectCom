@@ -62,6 +62,7 @@ partial class MonitorPageWindow
         _btnUnlock.Width = 90;
         _previewGrid.AllowUserToAddRows = false;
         _previewGrid.AllowUserToDeleteRows = false;
+        _previewGrid.AllowUserToResizeColumns = false;
         _previewGrid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
         _previewGrid.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.AutoSize;
         _previewGrid.Dock = DockStyle.Fill;

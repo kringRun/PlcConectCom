@@ -4,8 +4,27 @@ namespace PlcConectCom.WinFormsTest;
 
 public sealed class ProcessRealtimeValueDisplayControl : UserControl
 {
-    private readonly Label _lblTitle = new() { Dock = DockStyle.Left, Width = 140, TextAlign = ContentAlignment.MiddleLeft };
-    private readonly TextBox _txtValue = new() { Dock = DockStyle.Fill, ReadOnly = true, TextAlign = HorizontalAlignment.Center };
+    /// <summary>名称统一深灰：与区块标题（深蓝 28,58,120）明显区分，标题归标题、条目归条目。</summary>
+    private static readonly Color UnifiedNameColor = Color.FromArgb(70, 70, 70);
+
+    // 名称统一左对齐并按内容自适应宽度（AutoSize），文字后仅留 6px 间隙；剩余宽度全部给数值框（Dock.Fill）
+    private readonly Label _lblTitle = new()
+    {
+        Dock = DockStyle.Left,
+        AutoSize = true,
+        TextAlign = ContentAlignment.MiddleLeft,
+        Padding = new Padding(0, 0, 6, 0),
+        Font = new Font("Microsoft YaHei UI", 11F, FontStyle.Bold),
+        ForeColor = UnifiedNameColor
+    };
+    // 值显示用白底细边框 Label：比只读 TextBox 更轻，与按钮区的扁平风格统一
+    private readonly Label _lblValue = new()
+    {
+        Dock = DockStyle.Fill,
+        TextAlign = ContentAlignment.MiddleCenter,
+        BackColor = Color.White,
+        BorderStyle = BorderStyle.FixedSingle
+    };
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 500 };
     private bool _reading;
     private string _address = string.Empty;
@@ -30,12 +49,26 @@ public sealed class ProcessRealtimeValueDisplayControl : UserControl
 
     public ProcessRealtimeValueDisplayControl()
     {
-        Width = 360;
+        Width = 400;
         Height = 34;
         Margin = new Padding(0, 0, 0, 6);
-        Controls.Add(_txtValue);
+        Controls.Add(_lblValue);
         Controls.Add(_lblTitle);
         _timer.Tick += async (_, _) => await RefreshAsync();
+    }
+
+    /// <summary>按分辨率缩放：scale=1 为默认 400×34，标题按内容自适应；低分辨率整体缩小。</summary>
+    public void ApplyUiScale(float scale)
+    {
+        if (scale <= 0)
+            return;
+        Width = (int)Math.Round(400 * scale);
+        Height = (int)Math.Round(34 * scale);
+        Margin = new Padding(0, 0, 0, (int)Math.Round(6 * scale));
+        _lblTitle.Font = new Font("Microsoft YaHei UI", 11F * scale, FontStyle.Bold);
+        _lblTitle.Padding = new Padding(0, 0, (int)Math.Round(6 * scale), 0);
+        _lblValue.Font = new Font("Microsoft YaHei UI", 10F * scale, FontStyle.Bold);
+        Font = new Font("Microsoft YaHei UI", 9F * scale);
     }
 
     public void ApplyItem(ProcessRealtimeDataItem item)
@@ -43,9 +76,10 @@ public sealed class ProcessRealtimeValueDisplayControl : UserControl
         _address = item.Address?.Trim() ?? string.Empty;
         _type = item.Type == ParameterValueType.REAL_ARRAY ? ParameterValueType.REAL : item.Type;
         _displayAsHms = item.DisplayAsHms;
+        // 名称统一深灰（与深蓝区块标题区分）；数值保留配置色（故障红/运行绿等语义色仍有用）
         Color c = Color.FromArgb(item.DisplayColorArgb);
-        _lblTitle.ForeColor = c;
-        _txtValue.ForeColor = c;
+        _lblTitle.ForeColor = UnifiedNameColor;
+        _lblValue.ForeColor = c;
         _lblTitle.Text = !string.IsNullOrWhiteSpace(item.Name)
             ? item.Name.Trim()
             : !string.IsNullOrWhiteSpace(item.Comment) ? item.Comment.Trim() : _address;
@@ -58,7 +92,7 @@ public sealed class ProcessRealtimeValueDisplayControl : UserControl
         var plc = PlcProvider?.Invoke() ?? PlcInstance;
         if (plc is not { IsConnected: true })
         {
-            _txtValue.Text = "--";
+            _lblValue.Text = "--";
             return;
         }
 
@@ -66,11 +100,11 @@ public sealed class ProcessRealtimeValueDisplayControl : UserControl
         try
         {
             string s = await ReadValueForDisplayAsync(plc, _type, _address, _displayAsHms);
-            _txtValue.Text = _displayAsHms ? FormatSecondsToHms(s) : s;
+            _lblValue.Text = _displayAsHms ? FormatSecondsToHms(s) : s;
         }
         catch (Exception ex)
         {
-            _txtValue.Text = "ERR";
+            _lblValue.Text = "ERR";
             LogAction?.Invoke($"主界面工艺数据读取失败 {_address}: {ex.Message}");
         }
         finally

@@ -16,28 +16,12 @@ static class Program
 
         Application.ThreadException += (_, args) =>
         {
-            try
-            {
-                MessageBox.Show(args.Exception.ToString(), "UI 线程未处理异常", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-            catch
-            {
-                // ignore
-            }
+            LogUnhandledException("UI 线程未处理异常", args.Exception, isTerminating: false);
         };
         AppDomain.CurrentDomain.UnhandledException += (_, args) =>
         {
             if (args.ExceptionObject is Exception ex)
-            {
-                try
-                {
-                    MessageBox.Show(ex.ToString(), "未处理异常", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                }
-                catch
-                {
-                    // ignore
-                }
-            }
+                LogUnhandledException("非 UI 线程未处理异常", ex, args.IsTerminating);
         };
 
         if (!LicenseAuthorization.IsCurrentlyAuthorized(out _, out _)
@@ -53,7 +37,30 @@ static class Program
         }
         catch (Exception ex)
         {
-            MessageBox.Show(ex.ToString(), "启动失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            string logPath = LogUnhandledException("启动失败", ex, isTerminating: true);
+            MessageBox.Show($"程序启动失败，详情已写入日志：\n{logPath}", "启动失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
+    }
+
+    private static string LogUnhandledException(string title, Exception ex, bool isTerminating)
+    {
+        string logDir = Path.Combine(AppContext.BaseDirectory, "Logs");
+        string logPath = Path.Combine(logDir, "unhandled-exceptions.log");
+
+        try
+        {
+            Directory.CreateDirectory(logDir);
+            string text =
+                $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {title} IsTerminating={isTerminating}{Environment.NewLine}" +
+                ex + Environment.NewLine +
+                new string('-', 120) + Environment.NewLine;
+            File.AppendAllText(logPath, text);
+        }
+        catch
+        {
+            // Last-chance exception logging must never throw.
+        }
+
+        return logPath;
     }
 }

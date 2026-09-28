@@ -1,6 +1,9 @@
 using System.Globalization;
+using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Text.RegularExpressions;
+using ExcelDataReader;
 
 namespace PlcConectCom.WinFormsTest;
 
@@ -11,7 +14,12 @@ public sealed class MultiAxisPositionControl : UserControl
     private const string AxisMotionCurrentPosFieldKey = "CurrentPos";
 
     private const string ConfigFileName = "MultiAxisPosition.config.json";
+    private const string KeywordFileName = "MultiAxisPosition.keywords.json";
     private const string AuthConfigFileName = "RoleAuth.config.json";
+    private const int MaxImportAxisCount = 256;
+    private static readonly Regex IndexedAxisCommentRegex = new(
+        @"(?:^|\s)(?<index>\d+)\s*[:：]\s*(?<name>.*?)(?=\s+\d+\s*[:：]|$)",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly JsonSerializerOptions JsonFileOptions = new()
     {
         WriteIndented = true,
@@ -26,21 +34,39 @@ public sealed class MultiAxisPositionControl : UserControl
     private readonly Button _btnSave = new() { Text = "保存位置", Width = 90 };
     private readonly Button _btnLoad = new() { Text = "加载位置", Width = 90 };
     private readonly Button _btnEditAuth = new() { Text = "编辑解锁", Width = 90 };
+    private readonly Button _btnImportExcel = new() { Text = "导入Excel", Width = 90 };
+    private readonly ComboBox _cmbKeyword = new() { Width = 150, DropDownStyle = ComboBoxStyle.DropDown };
+    private readonly Button _btnSearch = new() { Text = "关键字搜索", Width = 80 };
+    private readonly Button _btnClearKeyword = new() { Text = "清除关键字", Width = 80 };
     private readonly Dictionary<string, TextBox> _teachInputs = [];
     private readonly Dictionary<string, TextBox> _locateInputs = [];
     private readonly List<AxisPageDefinition> _pages = [];
+    private readonly List<string> _keywords = [];
     private readonly string _configPath;
+    private readonly string _keywordPath;
     private bool _suspendAutoSave;
     private bool _canModify = true;
     private bool _editUnlocked;
 
-    public MultiAxisPositionControl()
+    public MultiAxisPositionControl() : this(null) { }
+
+    public MultiAxisPositionControl(string? storageKey)
     {
-        _configPath = Path.Combine(AppContext.BaseDirectory, ConfigFileName);
+        _configPath = Path.Combine(AppContext.BaseDirectory, BuildStorageFileName(ConfigFileName, storageKey));
+        _keywordPath = Path.Combine(AppContext.BaseDirectory, BuildStorageFileName(KeywordFileName, storageKey));
         BuildUi();
         BindEvents();
+        LoadKeywords();
         SetPermission(canModify: true);
         LoadConfigFromFile();
+    }
+
+    private static string BuildStorageFileName(string fileName, string? storageKey)
+    {
+        if (string.IsNullOrWhiteSpace(storageKey))
+            return fileName;
+        string safeKey = string.Concat(storageKey.Where(char.IsLetterOrDigit));
+        return string.IsNullOrWhiteSpace(safeKey) ? fileName : $"{Path.GetFileNameWithoutExtension(fileName)}.{safeKey}{Path.GetExtension(fileName)}";
     }
 
     public event Func<MultiAxisActionContext, Task>? TeachPositionRequested;
@@ -68,13 +94,26 @@ public sealed class MultiAxisPositionControl : UserControl
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 3,
+            RowCount = 4,
             Padding = new Padding(4)
         };
 
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        var topActionPanel = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            WrapContents = false,
+            Padding = new Padding(0, 0, 0, 4)
+        };
+        topActionPanel.Controls.Add(_btnImportExcel);
+        topActionPanel.Controls.Add(_cmbKeyword);
+        topActionPanel.Controls.Add(_btnSearch);
+        topActionPanel.Controls.Add(_btnClearKeyword);
 
         var positionPanel = new TableLayoutPanel
         {
@@ -101,9 +140,10 @@ public sealed class MultiAxisPositionControl : UserControl
 
         actionPanel.Controls.AddRange([_btnEditAuth, _btnTeach, _btnLocate, _btnSave, _btnLoad]);
 
-        root.Controls.Add(_tabControl, 0, 0);
-        root.Controls.Add(positionPanel, 0, 1);
-        root.Controls.Add(actionPanel, 0, 2);
+        root.Controls.Add(topActionPanel, 0, 0);
+        root.Controls.Add(_tabControl, 0, 1);
+        root.Controls.Add(positionPanel, 0, 2);
+        root.Controls.Add(actionPanel, 0, 3);
 
         Controls.Add(root);
     }
@@ -116,6 +156,18 @@ public sealed class MultiAxisPositionControl : UserControl
         _btnLocate.Click += async (_, _) => await HandleLocateAsync();
         _btnSave.Click += async (_, _) => await HandleSaveAsync();
         _btnLoad.Click += async (_, _) => await HandleLoadAsync();
+        _btnImportExcel.Click += (_, _) => ImportPagesFromExcel();
+        _btnSearch.Click += (_, _) => ApplyKeywordFilter(saveKeyword: true);
+        _btnClearKeyword.Click += (_, _) => ClearKeywords();
+        _cmbKeyword.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode == Keys.Enter)
+            {
+                ApplyKeywordFilter(saveKeyword: true);
+                e.Handled = true;
+                e.SuppressKeyPress = true;
+            }
+        };
     }
 
     public void SetPermission(bool canModify)
@@ -130,6 +182,10 @@ public sealed class MultiAxisPositionControl : UserControl
         _btnLocate.Enabled = canModify && _editUnlocked;
         _btnSave.Enabled = canModify && _editUnlocked;
         _btnLoad.Enabled = canModify;
+        _btnImportExcel.Enabled = canModify && _editUnlocked;
+        _cmbKeyword.Enabled = canModify && _editUnlocked;
+        _btnSearch.Enabled = canModify && _editUnlocked;
+        _btnClearKeyword.Enabled = canModify && _editUnlocked;
         UpdateInputEditorsState();
     }
 
@@ -153,6 +209,9 @@ public sealed class MultiAxisPositionControl : UserControl
         }
 
         RebuildPositionInputsForCurrentPage();
+
+        if (!string.IsNullOrWhiteSpace(_cmbKeyword.Text.Trim()))
+            ApplyKeywordFilter(saveKeyword: false);
 
         if (saveAfterSet && !_suspendAutoSave)
             SaveConfigToFile();
@@ -188,6 +247,407 @@ public sealed class MultiAxisPositionControl : UserControl
         ]);
     }
 
+    private void ImportPagesFromExcel()
+    {
+        if (!_canModify || !_editUnlocked)
+            return;
+
+        using var dialog = new OpenFileDialog
+        {
+            Title = "选择多轴位置Excel文件",
+            Filter = "Excel 文件 (*.xls;*.xlsx)|*.xls;*.xlsx|所有文件 (*.*)|*.*",
+            InitialDirectory = AppContext.BaseDirectory
+        };
+
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+            return;
+
+        try
+        {
+            List<ImportedPositionRow> rows = ReadImportedPositionRows(dialog.FileName);
+            List<AxisPageDefinition> pages = BuildPagesFromImportedRows(rows);
+            if (pages.Count == 0)
+            {
+                MessageBox.Show(this, "未解析到有效的多轴位置数据。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            SetPages(pages);
+            LogAction?.Invoke($"多轴位置Excel导入成功，共 {pages.Sum(x => x.Points.Count)} 个点位，{pages.Count} 个页签。来源: {dialog.FileName}");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"导入失败: {ex.Message}", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            LogAction?.Invoke($"多轴位置Excel导入失败: {ex.Message}");
+        }
+    }
+
+    private static List<ImportedPositionRow> ReadImportedPositionRows(string fileName)
+    {
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+
+        using var stream = File.Open(fileName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var reader = ExcelReaderFactory.CreateReader(stream);
+
+        var rows = new List<ImportedPositionRow>();
+        bool isHeader = true;
+        int nameCol = 1;
+        int addressCol = 2;
+        int dataTypeCol = 3;
+        int commentCol = -1;
+
+        while (reader.Read())
+        {
+            if (isHeader)
+            {
+                for (int i = 0; i < reader.FieldCount; i++)
+                {
+                    string header = GetCellText(reader, i);
+                    if (string.Equals(header, "Name", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(header, "名称", StringComparison.OrdinalIgnoreCase))
+                        nameCol = i;
+                    else if (string.Equals(header, "Address", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(header, "Adress", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(header, "地址", StringComparison.OrdinalIgnoreCase))
+                        addressCol = i;
+                    else if (string.Equals(header, "DataType", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(header, "数据类型", StringComparison.OrdinalIgnoreCase))
+                        dataTypeCol = i;
+                    else if (string.Equals(header, "Comment", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(header, "注释", StringComparison.OrdinalIgnoreCase))
+                        commentCol = i;
+                }
+
+                isHeader = false;
+                continue;
+            }
+
+            string name = GetCellText(reader, nameCol);
+            string address = NormalizeImportedAddress(GetCellText(reader, addressCol));
+            string dataTypeText = GetCellText(reader, dataTypeCol);
+            string comment = commentCol >= 0 ? GetCellText(reader, commentCol) : string.Empty;
+
+            if (string.IsNullOrWhiteSpace(name) && string.IsNullOrWhiteSpace(address))
+                continue;
+
+            rows.Add(new ImportedPositionRow(name, address, dataTypeText, comment));
+        }
+
+        if (rows.Count == 0)
+            throw new InvalidOperationException("未读取到有效数据。");
+
+        return rows;
+    }
+
+    private static List<AxisPageDefinition> BuildPagesFromImportedRows(IEnumerable<ImportedPositionRow> rows)
+    {
+        var groups = new Dictionary<string, ImportedPositionGroup>(StringComparer.OrdinalIgnoreCase);
+        var orderedGroups = new List<ImportedPositionGroup>();
+
+        foreach (var row in rows)
+        {
+            (string locateTrigger, string pointNumAddr, string pointNumData) =
+                ExcelPositionCommentAxisGroupParser.ParseAxisGroupPlcFields(row.Comment);
+            string commentForAxes = ExcelPositionCommentAxisGroupParser.CommentPrefixForIndexedAxisNames(row.Comment);
+
+            int axisCount = InferAxisCount(row.DataTypeText, commentForAxes);
+            if (axisCount <= 0)
+                continue;
+
+            List<string> axisNames = ParseAxisNamesFromComment(commentForAxes, axisCount);
+            string groupKey = string.Join('\u001F', axisNames);
+            if (!groups.TryGetValue(groupKey, out var group))
+            {
+                group = new ImportedPositionGroup(DerivePageName(axisNames), axisNames);
+                groups[groupKey] = group;
+                orderedGroups.Add(group);
+            }
+
+            Dictionary<string, string> axisAddresses = BuildAxisAddresses(row.Address, axisNames);
+            group.Points.Add(new AxisPointItem
+            {
+                PointName = row.Name,
+                BaseAddress = row.Address,
+                DataTypeText = row.DataTypeText,
+                Comment = row.Comment,
+                LocateTriggerPlcAddress = locateTrigger,
+                PointNumberPlcAddress = pointNumAddr,
+                PointNumberData = pointNumData,
+                AxisAddresses = axisAddresses,
+                AxisPositions = axisNames.ToDictionary(x => x, _ => 0d, StringComparer.OrdinalIgnoreCase)
+            });
+        }
+
+        var usedPageNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var pages = new List<AxisPageDefinition>();
+        foreach (var group in orderedGroups)
+        {
+            string pageName = MakeUniquePageName(group.PageName, usedPageNames);
+            pages.Add(new AxisPageDefinition
+            {
+                PageName = pageName,
+                Axes = group.AxisNames.Select(x => new AxisDefinition { AxisName = x, DisplayName = x }).ToList(),
+                Points = group.Points
+            });
+        }
+
+        return pages;
+    }
+
+    private static string GetCellText(IExcelDataReader reader, int index)
+    {
+        if (index < 0 || index >= reader.FieldCount)
+            return string.Empty;
+
+        return Convert.ToString(reader.GetValue(index), CultureInfo.InvariantCulture)?.Trim() ?? string.Empty;
+    }
+
+    private static string NormalizeImportedAddress(string rawAddress)
+    {
+        string address = rawAddress.Trim();
+        if (address.StartsWith('%'))
+            address = address[1..];
+
+        return address;
+    }
+
+    private static int InferAxisCount(string dataTypeText, string comment)
+    {
+        ParameterImportDataTypeResult dataType = ParameterTableControl.ParseImportDataType(dataTypeText);
+        if (dataType.Type == ParameterValueType.REAL_ARRAY && dataType.RealArrayLength > 0)
+            return dataType.RealArrayLength;
+
+        int countFromComment = IndexedAxisCommentRegex.Matches(comment).Count;
+        if (countFromComment > 0)
+            return Math.Min(countFromComment, MaxImportAxisCount);
+
+        return string.Equals(dataTypeText.Trim(), "REAL", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
+    }
+
+    private static List<string> ParseAxisNamesFromComment(string comment, int axisCount)
+    {
+        var byIndex = new SortedDictionary<int, string>();
+        foreach (Match match in IndexedAxisCommentRegex.Matches(comment))
+        {
+            if (!int.TryParse(match.Groups["index"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int index))
+                continue;
+
+            string name = match.Groups["name"].Value.Trim();
+            if (!string.IsNullOrWhiteSpace(name))
+                byIndex[index] = name;
+        }
+
+        var names = new List<string>(axisCount);
+        foreach (string name in byIndex.Values.Take(axisCount))
+            names.Add(name);
+
+        if (names.Count == 0 && axisCount == 1 && !string.IsNullOrWhiteSpace(comment))
+            names.Add(comment.Trim());
+
+        while (names.Count < axisCount)
+            names.Add($"轴{names.Count + 1}");
+
+        return names;
+    }
+
+    private static Dictionary<string, string> BuildAxisAddresses(string baseAddress, IReadOnlyList<string> axisNames)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < axisNames.Count; i++)
+        {
+            string address = string.Empty;
+            if (!string.IsNullOrWhiteSpace(baseAddress))
+            {
+                try
+                {
+                    address = BuildShiftedMdAddress(baseAddress, i);
+                }
+                catch
+                {
+                    address = i == 0 ? baseAddress : string.Empty;
+                }
+            }
+
+            result[axisNames[i]] = address;
+        }
+
+        return result;
+    }
+
+    private static string BuildShiftedMdAddress(string baseAddress, int indexDelta)
+    {
+        var (mem, offset, _) = global::PlcConectCom.AddressParser.ParseAddress(baseAddress.Trim());
+        if (!string.Equals(mem, "MD", StringComparison.Ordinal))
+            throw new InvalidOperationException("REAL_ARRAY 仅支持 MD 基址。");
+
+        return $"MD{offset + indexDelta}";
+    }
+
+    private static string DerivePageName(IReadOnlyList<string> axisNames)
+    {
+        if (axisNames.Count == 0)
+            return "多轴位置";
+
+        string prefix = axisNames[0];
+        foreach (string axisName in axisNames.Skip(1))
+        {
+            int len = 0;
+            int max = Math.Min(prefix.Length, axisName.Length);
+            while (len < max && prefix[len] == axisName[len])
+                len++;
+
+            prefix = prefix[..len];
+            if (prefix.Length == 0)
+                break;
+        }
+
+        prefix = prefix.Trim().TrimEnd('_', '-', '－', '/', '\\', ' ');
+        if (!string.IsNullOrWhiteSpace(prefix))
+            return prefix;
+
+        return $"{axisNames.Count}轴位置";
+    }
+
+    private static string MakeUniquePageName(string pageName, HashSet<string> usedPageNames)
+    {
+        string baseName = string.IsNullOrWhiteSpace(pageName) ? "多轴位置" : pageName.Trim();
+        string candidate = baseName;
+        int index = 2;
+        while (!usedPageNames.Add(candidate))
+            candidate = $"{baseName}{index++}";
+
+        return candidate;
+    }
+
+    private sealed record ImportedPositionRow(string Name, string Address, string DataTypeText, string Comment);
+
+    private sealed record ImportedPositionGroup(string PageName, List<string> AxisNames)
+    {
+        public List<AxisPointItem> Points { get; } = [];
+    }
+
+    private IEnumerable<DataGridView> EnumeratePositionGrids()
+    {
+        foreach (TabPage tab in _tabControl.TabPages)
+        {
+            foreach (Control c in tab.Controls)
+            {
+                if (c is DataGridView dgv)
+                    yield return dgv;
+            }
+        }
+    }
+
+    private void ApplyKeywordFilter(bool saveKeyword)
+    {
+        string keyword = _cmbKeyword.Text.Trim();
+        if (string.IsNullOrWhiteSpace(keyword))
+        {
+            foreach (DataGridView grid in EnumeratePositionGrids())
+            {
+                foreach (DataGridViewRow row in grid.Rows)
+                    row.Visible = true;
+            }
+
+            LogAction?.Invoke("已取消关键字筛选，显示全部点位。");
+            return;
+        }
+
+        foreach (DataGridView grid in EnumeratePositionGrids())
+        {
+            foreach (DataGridViewRow row in grid.Rows)
+                row.Visible = IsRowMatchKeyword(row, keyword);
+        }
+
+        if (saveKeyword)
+        {
+            AddKeyword(keyword);
+            SaveKeywords();
+        }
+
+        LogAction?.Invoke($"关键字筛选: {keyword}");
+    }
+
+    private static bool IsRowMatchKeyword(DataGridViewRow row, string keyword)
+    {
+        var parts = new List<string>();
+        DataGridView? view = row.DataGridView;
+        for (int c = 0; c < row.Cells.Count && view is not null; c++)
+        {
+            parts.Add(view.Columns[c].HeaderText ?? string.Empty);
+            parts.Add(Convert.ToString(row.Cells[c].Value, CultureInfo.InvariantCulture) ?? string.Empty);
+        }
+
+        string text = string.Join("|", parts);
+        return text.Contains(keyword, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void AddKeyword(string keyword)
+    {
+        _keywords.RemoveAll(x => string.Equals(x, keyword, StringComparison.OrdinalIgnoreCase));
+        _keywords.Insert(0, keyword);
+
+        if (_keywords.Count > 30)
+            _keywords.RemoveRange(30, _keywords.Count - 30);
+
+        RebindKeywordCombo();
+    }
+
+    private void ClearKeywords()
+    {
+        _cmbKeyword.Text = string.Empty;
+        foreach (DataGridView grid in EnumeratePositionGrids())
+        {
+            foreach (DataGridViewRow row in grid.Rows)
+                row.Visible = true;
+        }
+
+        _keywords.Clear();
+        RebindKeywordCombo();
+        SaveKeywords();
+        LogAction?.Invoke("已一键清除关键字并恢复全部点位显示。");
+    }
+
+    private void RebindKeywordCombo()
+    {
+        _cmbKeyword.Items.Clear();
+        _cmbKeyword.Items.AddRange(_keywords.Cast<object>().ToArray());
+    }
+
+    private void LoadKeywords()
+    {
+        try
+        {
+            if (!File.Exists(_keywordPath))
+                return;
+
+            string json = File.ReadAllText(_keywordPath);
+            List<string>? keywords = JsonSerializer.Deserialize<List<string>>(json);
+            if (keywords is null)
+                return;
+
+            _keywords.Clear();
+            _keywords.AddRange(keywords.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()));
+            RebindKeywordCombo();
+        }
+        catch (Exception ex)
+        {
+            LogAction?.Invoke($"加载多轴位置关键字失败: {ex.Message}");
+        }
+    }
+
+    private void SaveKeywords()
+    {
+        try
+        {
+            File.WriteAllText(_keywordPath, JsonSerializer.Serialize(_keywords, JsonFileOptions));
+        }
+        catch (Exception ex)
+        {
+            LogAction?.Invoke($"保存多轴位置关键字失败: {ex.Message}");
+        }
+    }
+
     private Control CreateInputRow(string title, FlowLayoutPanel inputPanel)
     {
         var row = new TableLayoutPanel
@@ -212,10 +672,12 @@ public sealed class MultiAxisPositionControl : UserControl
             Dock = DockStyle.Fill,
             AllowUserToAddRows = false,
             AllowUserToDeleteRows = false,
+            AllowUserToResizeColumns = false,
             SelectionMode = DataGridViewSelectionMode.FullRowSelect,
             RowHeadersVisible = false,
             MultiSelect = false,
-            ReadOnly = true
+            ReadOnly = true,
+            EditMode = DataGridViewEditMode.EditProgrammatically
         };
 
         grid.Columns.Add(new DataGridViewTextBoxColumn
@@ -253,6 +715,7 @@ public sealed class MultiAxisPositionControl : UserControl
         }
 
         grid.Tag = page;
+        grid.CellBeginEdit += (_, e) => e.Cancel = true;
         grid.SelectionChanged += (_, _) => SyncInputsFromSelectedRow(grid, page);
 
         var rowMenu = new ContextMenuStrip();
@@ -396,7 +859,8 @@ public sealed class MultiAxisPositionControl : UserControl
         dialog.AcceptButton = btnOk;
         dialog.CancelButton = btnCancel;
 
-        if (dialog.ShowDialog(this) != DialogResult.OK)
+        DataGridViewNoSortHelper.WireControlSubtreeForNoColumnSort(dialog);
+        if (AppDialog.ShowDialog(dialog, this) != DialogResult.OK)
             return false;
 
         string password = txtPassword.Text.Trim();

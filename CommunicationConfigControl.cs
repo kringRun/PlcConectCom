@@ -11,7 +11,8 @@ public enum CommunicationInstanceType
 {
     Socket客户端,
     Socket服务端,
-    串口
+    串口,
+    ModbusTcp服务端
 }
 
 /// <summary>Socket 客户端回包按分隔符拆分后，用「标记名 → 分片序号」供任务步骤取值。</summary>
@@ -53,6 +54,17 @@ public sealed class CommunicationInstanceConfig
 
     /// <summary>任务线程复用同一条 TCP，不在每次发送后断开。</summary>
     public bool PersistentConnection { get; set; }
+
+    // —— Modbus TCP 服务端扩展 ——
+
+    /// <summary>数据来源：本地地址区（HMI 自维护）/ 桥接PLC（转发到已连接 PLC）。</summary>
+    public ModbusServerDataMode ModbusServerMode { get; set; } = ModbusServerDataMode.本地地址区;
+
+    /// <summary>对外暴露的从站号（UnitId），默认 1。</summary>
+    public int ModbusUnitId { get; set; } = 1;
+
+    /// <summary>地址区大小（保持寄存器个数），每个寄存器 16 位、对应 16 个线圈位。</summary>
+    public int ModbusRegisterCount { get; set; } = 2000;
 }
 
 // 通讯配置控件：用于维护可供任务引用的通讯实例
@@ -72,6 +84,7 @@ public sealed class CommunicationConfigControl : UserControl
         ReadOnly = true,
         AllowUserToAddRows = false,
         AllowUserToDeleteRows = false,
+        AllowUserToResizeColumns = false,
         RowHeadersVisible = false,
         MultiSelect = false,
         SelectionMode = DataGridViewSelectionMode.FullRowSelect,
@@ -85,6 +98,7 @@ public sealed class CommunicationConfigControl : UserControl
     private readonly Button _btnStartServer = new() { Text = "启动监听", Width = 84 };
     private readonly Button _btnStopServer = new() { Text = "停止监听", Width = 84, Enabled = false };
     private readonly Button _btnRefreshClients = new() { Text = "刷新客户端", Width = 92 };
+    private readonly Button _btnViewAddressArea = new() { Text = "查看地址区", Width = 92, Enabled = false };
     private readonly Label _lblServerStatus = new() { Text = "服务端状态: 未启动", AutoSize = true, Padding = new Padding(8, 8, 0, 0) };
     private readonly ListBox _lstClients = new() { Dock = DockStyle.Fill };
     private readonly TextBox _txtServerReceiveLog = new() { Dock = DockStyle.Fill, Multiline = true, ScrollBars = ScrollBars.Vertical, ReadOnly = true };
@@ -92,6 +106,7 @@ public sealed class CommunicationConfigControl : UserControl
     private readonly string _configPath;
     private readonly List<CommunicationInstanceConfig> _instances = [];
     private SocketServerCommunicationService? _activeSocketServer;
+    private ModbusTcpServerService? _activeModbusServer;
     private readonly Dictionary<string, SocketClientCommunicationService> _testSocketClients = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>任务用 Socket 长连接（与测试窗「连接」字典分离）。Key = BuildInstanceKey。</summary>
@@ -115,6 +130,12 @@ public sealed class CommunicationConfigControl : UserControl
 
     public Action<string>? LogAction { get; set; }
 
+    /// <summary>
+    /// Socket服务端收到数据并按「回包数值分隔符 + 结果字段标记」分片后触发；
+    /// 参数为（实例键或名称, 标记名→分片值 映射，含整包键）。任务管道据此更新 Socket分片标记 条件值。
+    /// </summary>
+    public event Action<string, IReadOnlyDictionary<string, string>>? ServerSocketMarkerValuesReceived;
+
     public Func<global::PlcConectCom.PlcCommunicator?>? PlcProvider { get; set; }
 
     public void SetPermission(bool canModify)
@@ -123,14 +144,16 @@ public sealed class CommunicationConfigControl : UserControl
         if (!canModify)
             _editUnlocked = false;
 
+        bool serverRunning = _activeSocketServer is not null || _activeModbusServer is not null;
         _btnEditAuth.Enabled = canModify;
         _btnEditAuth.Text = _editUnlocked ? "编辑锁定" : "编辑解锁";
         _btnAdd.Enabled = canModify && _editUnlocked;
         _btnEdit.Enabled = canModify && _editUnlocked;
         _btnDelete.Enabled = canModify && _editUnlocked;
-        _btnStartServer.Enabled = canModify && _activeSocketServer is null;
-        _btnStopServer.Enabled = canModify && _activeSocketServer is not null;
+        _btnStartServer.Enabled = canModify && !serverRunning;
+        _btnStopServer.Enabled = canModify && serverRunning;
         _btnRefreshClients.Enabled = canModify;
+        _btnViewAddressArea.Enabled = canModify && _activeModbusServer is not null;
     }
 
     public IReadOnlyList<TaskSourceAddressOption> GetSocketInstanceOptions()
@@ -521,7 +544,7 @@ public sealed class CommunicationConfigControl : UserControl
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "端口", FillWeight = 10 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "串口", FillWeight = 12 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "波特率", FillWeight = 10 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Socket回包/分隔", FillWeight = 20 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "参数摘要", FillWeight = 20 });
 
         var toolbar = new FlowLayoutPanel
         {
@@ -530,7 +553,7 @@ public sealed class CommunicationConfigControl : UserControl
             WrapContents = false,
             Padding = new Padding(0, 0, 0, 4)
         };
-        toolbar.Controls.AddRange([_btnEditAuth, _btnAdd, _btnEdit, _btnDelete, _btnStartServer, _btnStopServer, _btnRefreshClients, _lblServerStatus]);
+        toolbar.Controls.AddRange([_btnEditAuth, _btnAdd, _btnEdit, _btnDelete, _btnStartServer, _btnStopServer, _btnRefreshClients, _btnViewAddressArea, _lblServerStatus]);
 
         var monitorSplit = new SplitContainer
         {
@@ -561,6 +584,7 @@ public sealed class CommunicationConfigControl : UserControl
         _btnStartServer.Click += async (_, _) => await StartSelectedServerAsync();
         _btnStopServer.Click += (_, _) => StopActiveServer();
         _btnRefreshClients.Click += (_, _) => RefreshClientList();
+        _btnViewAddressArea.Click += (_, _) => OpenModbusAddressViewer();
         _grid.CellDoubleClick += (_, e) =>
         {
             if (e.RowIndex >= 0 && _editUnlocked)
@@ -586,14 +610,20 @@ public sealed class CommunicationConfigControl : UserControl
             return;
         }
 
-        if (selected.Type != CommunicationInstanceType.Socket服务端)
+        if (selected.Type is not (CommunicationInstanceType.Socket服务端 or CommunicationInstanceType.ModbusTcp服务端))
         {
-            MessageBox.Show(this, "仅Socket服务端实例支持启动监听。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, "仅Socket服务端 / ModbusTcp服务端实例支持启动监听。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
-        if (_activeSocketServer is not null)
+        if (_activeSocketServer is not null || _activeModbusServer is not null)
             StopActiveServer();
+
+        if (selected.Type == CommunicationInstanceType.ModbusTcp服务端)
+        {
+            StartModbusServer(selected);
+            return;
+        }
 
         try
         {
@@ -615,7 +645,70 @@ public sealed class CommunicationConfigControl : UserControl
         }
     }
 
+    private void StartModbusServer(CommunicationInstanceConfig cfg)
+    {
+        byte unitId = (byte)Math.Clamp(cfg.ModbusUnitId, 1, 247);
+        int registers = Math.Clamp(cfg.ModbusRegisterCount, 1, 65536);
+
+        try
+        {
+            var server = new ModbusTcpServerService(cfg.ModbusServerMode, unitId, registers, PlcProvider, msg => LogAction?.Invoke(msg));
+            server.Start(cfg.Port);
+            _activeModbusServer = server;
+            _activeServerName = cfg.Name;
+            _lblServerStatus.Text =
+                $"服务端状态: ModbusTCP监听中 [{cfg.Name}] 端口:{cfg.Port} 从站:{unitId} {registers}寄存器 ({cfg.ModbusServerMode})";
+            SetPermission(_canModify);
+            AppendReceiveLog(
+                $"ModbusTCP服务端实例[{cfg.Name}] 已启动监听，端口:{cfg.Port}，从站号:{unitId}，寄存器:{registers}，数据来源:{cfg.ModbusServerMode}");
+        }
+        catch (Exception ex)
+        {
+            StopActiveServer();
+            MessageBox.Show(this, $"ModbusTCP服务端启动失败: {ex.Message}", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    private void OpenModbusAddressViewer()
+    {
+        if (_activeModbusServer is null)
+        {
+            MessageBox.Show(this, "请先选中 ModbusTcp服务端 实例并点击【启动监听】。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        CommunicationInstanceConfig? cfg = string.IsNullOrWhiteSpace(_activeServerName)
+            ? null
+            : _instances.FirstOrDefault(x => string.Equals(x.Name, _activeServerName, StringComparison.OrdinalIgnoreCase));
+        if (cfg is null)
+            return;
+
+        using var viewer = new ModbusServerViewerForm(
+            _activeModbusServer,
+            cfg.Name,
+            cfg.Port,
+            (byte)Math.Clamp(cfg.ModbusUnitId, 1, 247))
+        {
+            CanModify = _canModify
+        };
+        AppDialog.ShowDialog(viewer, this);
+    }
+
     private void StopActiveServer()
+    {
+        if (_activeSocketServer is null && _activeModbusServer is null)
+            return;
+
+        StopSocketServer();
+        StopModbusServer();
+
+        _lblServerStatus.Text = "服务端状态: 未启动";
+        SetPermission(_canModify);
+        _activeServerName = null;
+        _lstClients.Items.Clear();
+    }
+
+    private void StopSocketServer()
     {
         if (_activeSocketServer is null)
             return;
@@ -626,11 +719,15 @@ public sealed class CommunicationConfigControl : UserControl
         _activeSocketServer.Stop();
         _activeSocketServer.Dispose();
         _activeSocketServer = null;
+    }
 
-        _lblServerStatus.Text = "服务端状态: 未启动";
-        SetPermission(_canModify);
-        _activeServerName = null;
-        _lstClients.Items.Clear();
+    private void StopModbusServer()
+    {
+        if (_activeModbusServer is null)
+            return;
+
+        _activeModbusServer.Dispose();
+        _activeModbusServer = null;
     }
 
     private void HandleServerClientConnected(string endpoint)
@@ -662,6 +759,25 @@ public sealed class CommunicationConfigControl : UserControl
         if (IsDisposed)
             return;
 
+        // 按该服务端实例配置的分隔符与结果标记分片，供任务「Socket分片标记」条件/结果取值
+        CommunicationInstanceConfig? cfg = string.IsNullOrWhiteSpace(_activeServerName)
+            ? null
+            : _instances.FirstOrDefault(x => string.Equals(x.Name, _activeServerName, StringComparison.OrdinalIgnoreCase));
+        if (cfg is not null && !string.IsNullOrWhiteSpace(data))
+        {
+            try
+            {
+                IReadOnlyDictionary<string, string> map = BuildSocketSliceValueMap(cfg, data.TrimEnd('\r', '\n'))
+                    ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                if (map.Count > 0)
+                    ServerSocketMarkerValuesReceived?.Invoke(BuildInstanceKey(cfg), map);
+            }
+            catch (Exception ex)
+            {
+                AppendReceiveLog($"服务端数据分片失败: {ex.Message}");
+            }
+        }
+
         BeginInvoke(() =>
         {
             AppendReceiveLog($"[{endpoint}] -> {data}");
@@ -671,6 +787,16 @@ public sealed class CommunicationConfigControl : UserControl
     private void RefreshClientList()
     {
         _lstClients.Items.Clear();
+
+        if (_activeModbusServer is not null)
+        {
+            int count = _activeModbusServer.ConnectedClientCount;
+            _lstClients.Items.Add(count > 0
+                ? $"Modbus 主站连接数: {count}"
+                : "Modbus 主站连接数: 0（暂无主站连接）");
+            return;
+        }
+
         if (_activeSocketServer is null)
             return;
 
@@ -743,6 +869,13 @@ public sealed class CommunicationConfigControl : UserControl
         if (removed.Type == CommunicationInstanceType.Socket客户端)
             DisconnectPersistentTaskSocket(BuildInstanceKey(removed));
 
+        // 删掉的是正在监听的服务端实例：先停服务，避免残留监听端口
+        if (_activeServerName is not null
+            && string.Equals(_activeServerName, removed.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            StopActiveServer();
+        }
+
         _instances.RemoveAt(index);
         SaveConfig();
         BindGrid();
@@ -761,14 +894,19 @@ public sealed class CommunicationConfigControl : UserControl
         _grid.Rows.Clear();
         foreach (var item in _instances)
         {
-            string socketCol = item.Type == CommunicationInstanceType.Socket客户端
-                ? $"{(item.PersistentConnection ? "长连 " : string.Empty)}{(item.WaitForResponse ? "等回包" : "不等")} {item.ReceiveTimeoutMs}ms 「{item.ResponseValueDelimiter}」"
-                : string.Empty;
+            string socketCol = item.Type switch
+            {
+                CommunicationInstanceType.Socket客户端 =>
+                    $"{(item.PersistentConnection ? "长连 " : string.Empty)}{(item.WaitForResponse ? "等回包" : "不等")} {item.ReceiveTimeoutMs}ms 「{item.ResponseValueDelimiter}」",
+                CommunicationInstanceType.ModbusTcp服务端 =>
+                    $"{item.ModbusServerMode} 从站:{Math.Clamp(item.ModbusUnitId, 1, 247)} 寄存器:{Math.Clamp(item.ModbusRegisterCount, 1, 65536)}",
+                _ => string.Empty
+            };
             _grid.Rows.Add(
                 item.Name,
                 item.Type,
                 item.Type is CommunicationInstanceType.Socket客户端 or CommunicationInstanceType.Socket服务端 ? item.Host : string.Empty,
-                item.Type is CommunicationInstanceType.Socket客户端 or CommunicationInstanceType.Socket服务端 ? item.Port : 0,
+                item.Type is CommunicationInstanceType.Socket客户端 or CommunicationInstanceType.Socket服务端 or CommunicationInstanceType.ModbusTcp服务端 ? item.Port : 0,
                 item.Type == CommunicationInstanceType.串口 ? item.ComPort : string.Empty,
                 item.Type == CommunicationInstanceType.串口 ? item.BaudRate : 0,
                 socketCol);
@@ -790,6 +928,9 @@ public sealed class CommunicationConfigControl : UserControl
             .Select(f => new SocketClientResultField { Name = f.Name, Index = f.Index })
             .ToList();
         dst.PersistentConnection = src.PersistentConnection;
+        dst.ModbusServerMode = src.ModbusServerMode;
+        dst.ModbusUnitId = src.ModbusUnitId;
+        dst.ModbusRegisterCount = src.ModbusRegisterCount;
     }
 
     private CommunicationInstanceConfig SnapshotCommunicationConfig(CommunicationInstanceConfig src)
@@ -819,12 +960,12 @@ public sealed class CommunicationConfigControl : UserControl
         {
             Dock = DockStyle.Fill,
             ColumnCount = 2,
-            RowCount = 10,
+            RowCount = 13,
             Padding = new Padding(10)
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (int ri = 0; ri < 9; ri++)
+        for (int ri = 0; ri < 12; ri++)
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         // 最后一行占满窗体剩余高度，避免标记表格被压成 0 高只剩灰底
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
@@ -862,6 +1003,21 @@ public sealed class CommunicationConfigControl : UserControl
         };
         gridMarkers.Columns.Add(new DataGridViewTextBoxColumn { Name = "MkName", HeaderText = "结果标记名", MinimumWidth = 140 });
         gridMarkers.Columns.Add(new DataGridViewTextBoxColumn { Name = "MkIdx", HeaderText = "分片序号(0起)", FillWeight = 40 });
+
+        // —— ModbusTcp服务端 扩展字段 ——
+        var cmbModbusMode = new ComboBox { Dock = DockStyle.Left, Width = 160, DropDownStyle = ComboBoxStyle.DropDownList };
+        cmbModbusMode.Items.AddRange(Enum.GetNames<ModbusServerDataMode>());
+        cmbModbusMode.SelectedIndex = 0;
+        var numUnitId = new NumericUpDown { Dock = DockStyle.Left, Width = 120, Minimum = 1, Maximum = 247, Value = 1 };
+        var numRegisters = new NumericUpDown { Dock = DockStyle.Left, Width = 120, Minimum = 1, Maximum = 65536, Value = 2000, Increment = 100 };
+        var lblModbusHint = new Label
+        {
+            Text = "地址换算与 PLC 侧一致：MW{n}↔40001+n、MD{n}↔40001+2n、MB{n}↔40001+n/2、MX{a}.{b}↔00001+a*8+b；桥接模式下外部读写由 HMI 转发到已连接 PLC。",
+            AutoSize = true,
+            ForeColor = Color.DimGray,
+            MaximumSize = new Size(760, 0),
+            Padding = new Padding(0, 2, 0, 2)
+        };
 
         // Rows.Clear / Rows.Add 会触发 RowsAdded、CellValueChanged，若在重填表格前执行 AutoPersist 会把标记保存成空列表。
         var suppressMarkerAutoPersist = false;
@@ -913,15 +1069,24 @@ public sealed class CommunicationConfigControl : UserControl
             if (suppressMarkerAutoPersist)
                 return;
 
-            if (existing is null || cmbType.SelectedItem is not CommunicationInstanceType.Socket客户端)
+            if (existing is null)
                 return;
 
-            if (existing.PersistentConnection && !chkPersistent.Checked)
+            bool isClient = cmbType.SelectedItem is CommunicationInstanceType.Socket客户端;
+            bool isServer = cmbType.SelectedItem is CommunicationInstanceType.Socket服务端;
+            if (!isClient && !isServer)
+                return;
+
+            if (isClient && existing.PersistentConnection && !chkPersistent.Checked)
                 DisconnectPersistentTaskSocket(BuildInstanceKey(existing));
 
-            existing.WaitForResponse = chkWaitResponse.Checked;
-            existing.PersistentConnection = chkPersistent.Checked;
-            existing.ReceiveTimeoutMs = (int)numTimeoutMs.Value;
+            if (isClient)
+            {
+                existing.WaitForResponse = chkWaitResponse.Checked;
+                existing.PersistentConnection = chkPersistent.Checked;
+                existing.ReceiveTimeoutMs = (int)numTimeoutMs.Value;
+            }
+
             existing.ResponseValueDelimiter = string.IsNullOrWhiteSpace(txtDelimiter.Text) ? "," : txtDelimiter.Text.Trim();
             existing.SocketResultFields = ReadMarkersFromGrid();
             SaveConfig();
@@ -941,6 +1106,20 @@ public sealed class CommunicationConfigControl : UserControl
                 c.WaitForResponse = chkWaitResponse.Checked;
                 c.PersistentConnection = chkPersistent.Checked;
                 c.ReceiveTimeoutMs = (int)numTimeoutMs.Value;
+            }
+
+            if (c.Type == CommunicationInstanceType.ModbusTcp服务端)
+            {
+                c.ModbusServerMode = cmbModbusMode.SelectedItem is string modeName
+                    && Enum.TryParse(modeName, out ModbusServerDataMode mode)
+                        ? mode
+                        : ModbusServerDataMode.本地地址区;
+                c.ModbusUnitId = (int)numUnitId.Value;
+                c.ModbusRegisterCount = (int)numRegisters.Value;
+            }
+
+            if (c.Type is CommunicationInstanceType.Socket客户端 or CommunicationInstanceType.Socket服务端)
+            {
                 c.ResponseValueDelimiter = string.IsNullOrWhiteSpace(txtDelimiter.Text) ? "," : txtDelimiter.Text.Trim();
                 // 关窗后 DataGridView 可能已不可用；优先使用 FormClosing 里抓的快照
                 c.SocketResultFields = markersOkSnapshot is not null
@@ -982,6 +1161,23 @@ public sealed class CommunicationConfigControl : UserControl
         layout.Controls.Add(testPanel, 1, 7);
         layout.Controls.Add(new Label { Text = "回包数值分隔符", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 8);
         layout.Controls.Add(txtDelimiter, 1, 8);
+        layout.Controls.Add(new Label { Text = "数据来源", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 9);
+        var modbusModePanel = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            WrapContents = true,
+            FlowDirection = FlowDirection.LeftToRight
+        };
+        modbusModePanel.Controls.Add(cmbModbusMode);
+        modbusModePanel.Controls.Add(lblModbusHint);
+        layout.Controls.Add(modbusModePanel, 1, 9);
+        var lblUnitId = new Label { Text = "从站号(UnitId)", AutoSize = true, Anchor = AnchorStyles.Left };
+        layout.Controls.Add(lblUnitId, 0, 10);
+        layout.Controls.Add(numUnitId, 1, 10);
+        var lblRegisters = new Label { Text = "寄存器数量", AutoSize = true, Anchor = AnchorStyles.Left };
+        layout.Controls.Add(lblRegisters, 0, 11);
+        layout.Controls.Add(numRegisters, 1, 11);
         var lblMarkers = new Label
         {
             Text = "结果字段标记（任务里按标记名取分片；如 123,456 且分隔符为逗号，序号0→123）",
@@ -1002,25 +1198,35 @@ public sealed class CommunicationConfigControl : UserControl
         markerLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
         markerLayout.Controls.Add(lblMarkers, 0, 0);
         markerLayout.Controls.Add(gridMarkers, 0, 1);
-        layout.Controls.Add(markerLayout, 0, 9);
+        layout.Controls.Add(markerLayout, 0, 12);
         layout.SetColumnSpan(markerLayout, 2);
 
         void UpdateFieldsState()
         {
             bool isSocket = cmbType.SelectedItem is CommunicationInstanceType.Socket客户端 or CommunicationInstanceType.Socket服务端;
             bool isSocketClient = cmbType.SelectedItem is CommunicationInstanceType.Socket客户端;
+            bool isModbusServer = cmbType.SelectedItem is CommunicationInstanceType.ModbusTcp服务端;
             txtHost.Enabled = isSocket;
-            numPort.Enabled = isSocket;
+            numPort.Enabled = isSocket || isModbusServer;
             txtComPort.Enabled = !isSocket;
             numBaud.Enabled = !isSocket;
             chkWaitResponse.Enabled = isSocketClient;
             chkPersistent.Enabled = isSocketClient;
             numTimeoutMs.Enabled = isSocketClient;
             btnConnectSocket.Enabled = isSocketClient;
-            txtDelimiter.Enabled = isSocketClient;
-            gridMarkers.Enabled = isSocketClient;
-            lblMarkers.Enabled = isSocketClient;
-            markerLayout.Enabled = isSocketClient;
+            // 分隔符与结果标记：客户端、服务端都可配置（服务端收到数据后同样按分隔符分片供任务取值）
+            txtDelimiter.Enabled = isSocket;
+            gridMarkers.Enabled = isSocket;
+            lblMarkers.Enabled = isSocket;
+            markerLayout.Enabled = isSocket;
+            // ModbusTCP 服务端：只有它才需要「数据来源 / 从站号 / 寄存器数量」，端口复用上面的「端口」
+            cmbModbusMode.Enabled = isModbusServer;
+            numUnitId.Enabled = isModbusServer;
+            numRegisters.Enabled = isModbusServer;
+            lblUnitId.Enabled = isModbusServer;
+            lblRegisters.Enabled = isModbusServer;
+            modbusModePanel.Enabled = isModbusServer;
+            lblModbusHint.Visible = isModbusServer;
         }
 
         string GetConnectionKey() => txtName.Text.Trim();
@@ -1072,7 +1278,13 @@ public sealed class CommunicationConfigControl : UserControl
                 Host = txtHost.Text.Trim(),
                 Port = (int)numPort.Value,
                 ComPort = txtComPort.Text.Trim(),
-                BaudRate = (int)numBaud.Value
+                BaudRate = (int)numBaud.Value,
+                ModbusServerMode = cmbModbusMode.SelectedItem is string modeName
+                    && Enum.TryParse(modeName, out ModbusServerDataMode mode)
+                        ? mode
+                        : ModbusServerDataMode.本地地址区,
+                ModbusUnitId = (int)numUnitId.Value,
+                ModbusRegisterCount = (int)numRegisters.Value
             };
 
             try
@@ -1134,6 +1346,21 @@ public sealed class CommunicationConfigControl : UserControl
                             MessageBox.Show(dialog, "Socket服务端测试成功：端口可正常监听。", "测试结果", MessageBoxButtons.OK, MessageBoxIcon.Information);
                             break;
                         }
+                    case CommunicationInstanceType.ModbusTcp服务端:
+                        {
+                            using var probe = new ModbusTcpServerService(
+                                cfg.ModbusServerMode,
+                                (byte)Math.Clamp(cfg.ModbusUnitId, 1, 247),
+                                Math.Clamp(cfg.ModbusRegisterCount, 1, 65536),
+                                PlcProvider,
+                                null);
+                            probe.Start(cfg.Port);
+                            probe.Stop();
+                            MessageBox.Show(dialog,
+                                $"ModbusTCP服务端测试成功：端口 {cfg.Port} 可正常监听（数据来源:{cfg.ModbusServerMode}，从站号:{cfg.ModbusUnitId}，寄存器:{cfg.ModbusRegisterCount}）。",
+                                "测试结果", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                            break;
+                        }
                     case CommunicationInstanceType.串口:
                         {
                             using var serial = new SerialCommunicationService();
@@ -1190,6 +1417,9 @@ public sealed class CommunicationConfigControl : UserControl
                 chkPersistent.Checked = existing.PersistentConnection;
                 numTimeoutMs.Value = Math.Clamp(existing.ReceiveTimeoutMs, numTimeoutMs.Minimum, numTimeoutMs.Maximum);
                 txtDelimiter.Text = string.IsNullOrWhiteSpace(existing.ResponseValueDelimiter) ? "," : existing.ResponseValueDelimiter;
+                cmbModbusMode.SelectedItem = existing.ModbusServerMode.ToString();
+                numUnitId.Value = Math.Clamp(existing.ModbusUnitId, numUnitId.Minimum, numUnitId.Maximum);
+                numRegisters.Value = Math.Clamp(existing.ModbusRegisterCount, numRegisters.Minimum, numRegisters.Maximum);
                 existing.SocketResultFields ??= [];
                 BindMarkersToGrid(existing.SocketResultFields);
                 if (existing.Type == CommunicationInstanceType.Socket客户端
@@ -1244,7 +1474,8 @@ public sealed class CommunicationConfigControl : UserControl
             }
         };
 
-        DialogResult dr = dialog.ShowDialog(this);
+        DataGridViewNoSortHelper.WireControlSubtreeForNoColumnSort(dialog);
+        DialogResult dr = AppDialog.ShowDialog(dialog, this);
         if (dr != DialogResult.OK)
         {
             if (cancelSnapshot is not null && existing is not null)

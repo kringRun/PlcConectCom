@@ -139,6 +139,7 @@ partial class DebugToolsPageWindow
         // 
         _outputGridPreview.AllowUserToAddRows = false;
         _outputGridPreview.AllowUserToDeleteRows = false;
+        _outputGridPreview.AllowUserToResizeColumns = false;
         _outputGridPreview.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
         _outputGridPreview.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.AutoSize;
         _outputGridPreview.Columns.AddRange(new DataGridViewColumn[] { dataGridViewTextBoxColumn1, dataGridViewTextBoxColumn2, dataGridViewTextBoxColumn3, dataGridViewTextBoxColumn4 });

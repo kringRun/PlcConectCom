@@ -36,6 +36,7 @@ public sealed class PlcBoolLabelDisplayConfigControl : UserControl
         Dock = DockStyle.Fill,
         AllowUserToAddRows = false,
         AllowUserToDeleteRows = false,
+        AllowUserToResizeColumns = false,
         RowHeadersVisible = false,
         SelectionMode = DataGridViewSelectionMode.FullRowSelect,
         MultiSelect = false,
@@ -54,9 +55,18 @@ public sealed class PlcBoolLabelDisplayConfigControl : UserControl
     private bool _canModify = true;
     private bool _editUnlocked;
 
-    public PlcBoolLabelDisplayConfigControl()
+    public PlcBoolLabelDisplayConfigControl() : this(null) { }
+
+    public PlcBoolLabelDisplayConfigControl(string? storageKey)
     {
-        _configPath = Path.Combine(AppContext.BaseDirectory, ConfigFileName);
+        string fileName = ConfigFileName;
+        if (!string.IsNullOrWhiteSpace(storageKey))
+        {
+            string safeKey = string.Concat(storageKey.Where(char.IsLetterOrDigit));
+            if (!string.IsNullOrWhiteSpace(safeKey))
+                fileName = $"{Path.GetFileNameWithoutExtension(ConfigFileName)}.{safeKey}{Path.GetExtension(ConfigFileName)}";
+        }
+        _configPath = Path.Combine(AppContext.BaseDirectory, fileName);
         BuildUi();
         BindEvents();
         LoadConfig();
@@ -151,8 +161,9 @@ public sealed class PlcBoolLabelDisplayConfigControl : UserControl
         var toolbar = new FlowLayoutPanel
         {
             Dock = DockStyle.Top,
-            AutoSize = true,
-            WrapContents = false,
+        AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            WrapContents = true,
             Padding = new Padding(0, 0, 0, 4)
         };
         toolbar.Controls.AddRange([_btnEditAuth, _btnAdd, _btnDelete, _btnSave, _btnReload]);

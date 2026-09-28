@@ -169,6 +169,7 @@ public sealed class TaskSettingsControl : UserControl
         Dock = DockStyle.Fill,
         AllowUserToAddRows = false,
         AllowUserToDeleteRows = false,
+        AllowUserToResizeColumns = false,
         RowHeadersVisible = false,
         ReadOnly = true,
         SelectionMode = DataGridViewSelectionMode.FullRowSelect,
@@ -459,6 +460,7 @@ public sealed class TaskSettingsControl : UserControl
             Height = 280,
             AllowUserToAddRows = false,
             AllowUserToDeleteRows = false,
+            AllowUserToResizeColumns = false,
             ReadOnly = true,
             RowHeadersVisible = false,
             SelectionMode = DataGridViewSelectionMode.FullRowSelect,
@@ -611,7 +613,8 @@ public sealed class TaskSettingsControl : UserControl
         dialog.AcceptButton = btnOk;
         dialog.CancelButton = btnCancel;
 
-        if (dialog.ShowDialog(this) != DialogResult.OK)
+        DataGridViewNoSortHelper.WireControlSubtreeForNoColumnSort(dialog);
+        if (AppDialog.ShowDialog(dialog, this) != DialogResult.OK)
             return null;
 
         string name = txtName.Text.Trim();
@@ -783,6 +786,7 @@ public sealed class TaskSettingsControl : UserControl
             Dock = DockStyle.Fill,
             AllowUserToAddRows = false,
             AllowUserToDeleteRows = false,
+            AllowUserToResizeColumns = false,
             RowHeadersVisible = false,
             SelectionMode = DataGridViewSelectionMode.FullRowSelect,
             AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
@@ -1068,7 +1072,8 @@ public sealed class TaskSettingsControl : UserControl
         dialog.AcceptButton = btnOk;
         dialog.CancelButton = btnCancel;
 
-        if (dialog.ShowDialog(this) != DialogResult.OK)
+        DataGridViewNoSortHelper.WireControlSubtreeForNoColumnSort(dialog);
+        if (AppDialog.ShowDialog(dialog, this) != DialogResult.OK)
             return null;
 
         TriggerConditionSourceType condSourceType = cSrc.SelectedItem is TriggerConditionSourceType stSel

@@ -26,6 +26,7 @@ public sealed class BoolGroupControlTable : UserControl
         Dock = DockStyle.Fill,
         AllowUserToAddRows = false,
         AllowUserToDeleteRows = false,
+        AllowUserToResizeColumns = false,
         RowHeadersVisible = false,
         SelectionMode = DataGridViewSelectionMode.FullRowSelect,
         MultiSelect = false,
@@ -41,7 +42,7 @@ public sealed class BoolGroupControlTable : UserControl
         Dock = DockStyle.Fill,
         AutoSize = true,
         AutoSizeMode = AutoSizeMode.GrowAndShrink,
-        WrapContents = false,
+        WrapContents = true,
         Padding = new Padding(0, 0, 0, 4),
         MinimumSize = new Size(0, 40)
     };
@@ -56,18 +57,35 @@ public sealed class BoolGroupControlTable : UserControl
     };
 
     private readonly string _configPath;
+
+    // 列顺序：名称 → 值状态 → 地址 → 按钮
+    private const int ColName = 0;
+    private const int ColStatus = 1;
+    private const int ColAddress = 2;
+    private const int ColButton = 3;
+
     private int _controlColumnIndex;
     private bool _suspendSave;
     private bool _canAddDelete = true;
     private bool _canModify = true;
     private bool _editUnlocked;
 
-    public BoolGroupControlTable()
+    public BoolGroupControlTable() : this(null) { }
+
+    public BoolGroupControlTable(string? storageKey)
     {
-        _configPath = Path.Combine(AppContext.BaseDirectory, ConfigFileName);
+        _configPath = Path.Combine(AppContext.BaseDirectory, BuildStorageFileName(ConfigFileName, storageKey));
         BuildUi();
         BindEvents();
         LoadConfigFromFile();
+    }
+
+    private static string BuildStorageFileName(string fileName, string? storageKey)
+    {
+        if (string.IsNullOrWhiteSpace(storageKey))
+            return fileName;
+        string safeKey = string.Concat(storageKey.Where(char.IsLetterOrDigit));
+        return string.IsNullOrWhiteSpace(safeKey) ? fileName : $"{Path.GetFileNameWithoutExtension(fileName)}.{safeKey}{Path.GetExtension(fileName)}";
     }
 
     public Func<global::PlcConectCom.PlcCommunicator?>? PlcProvider { get; set; }
@@ -75,6 +93,9 @@ public sealed class BoolGroupControlTable : UserControl
     public global::PlcConectCom.PlcCommunicator? PlcInstance { get; set; }
 
     public Action<string>? LogAction { get; set; }
+
+    /// <summary>设备显示名（主 PLC / 子 PLC 名称），仅用于手动操作日志归属。</summary>
+    public string DeviceDisplayName { get; set; } = "主 PLC";
 
     public Func<bool>? EditPermissionRequest { get; set; }
 
@@ -112,10 +133,10 @@ public sealed class BoolGroupControlTable : UserControl
             return;
 
         bool nameAddrEditable = _canModify && _editUnlocked;
-        _grid.Columns[0].ReadOnly = !nameAddrEditable;
-        _grid.Columns[1].ReadOnly = !nameAddrEditable;
-        _grid.Columns[2].ReadOnly = false;
-        _grid.Columns[3].ReadOnly = true;
+        _grid.Columns[ColName].ReadOnly = !nameAddrEditable;
+        _grid.Columns[ColStatus].ReadOnly = true;
+        _grid.Columns[ColAddress].ReadOnly = !nameAddrEditable;
+        _grid.Columns[ColButton].ReadOnly = false;
         _grid.ReadOnly = false;
     }
 
@@ -124,8 +145,9 @@ public sealed class BoolGroupControlTable : UserControl
         _suspendSave = true;
         _grid.Rows.Clear();
         foreach (var item in items)
-            _grid.Rows.Add(item.Name, item.Address, "关闭", string.Empty);
+            _grid.Rows.Add(item.Name, string.Empty, item.Address, "关闭");
         _suspendSave = false;
+        UpdateColumnWidthsByContent();
         SaveConfigToFile();
     }
 
@@ -134,8 +156,8 @@ public sealed class BoolGroupControlTable : UserControl
         var result = new List<BoolGroupControlItem>();
         foreach (DataGridViewRow row in _grid.Rows)
         {
-            string name = Convert.ToString(row.Cells[0].Value)?.Trim() ?? string.Empty;
-            string address = Convert.ToString(row.Cells[1].Value)?.Trim() ?? string.Empty;
+            string name = Convert.ToString(row.Cells[ColName].Value)?.Trim() ?? string.Empty;
+            string address = Convert.ToString(row.Cells[ColAddress].Value)?.Trim() ?? string.Empty;
             if (string.IsNullOrWhiteSpace(name) && string.IsNullOrWhiteSpace(address))
                 continue;
 
@@ -158,7 +180,7 @@ public sealed class BoolGroupControlTable : UserControl
 
         foreach (DataGridViewRow row in _grid.Rows)
         {
-            string address = (Convert.ToString(row.Cells[1].Value) ?? string.Empty).Trim();
+            string address = (Convert.ToString(row.Cells[ColAddress].Value) ?? string.Empty).Trim();
             if (!IsSupportedAddress(address))
             {
                 SetRowState(row, false, "地址无效", Color.DarkGray);
@@ -184,8 +206,9 @@ public sealed class BoolGroupControlTable : UserControl
         _grid.DefaultCellStyle.SelectionForeColor = Color.Black;
         _grid.RowTemplate.Height = 30;
 
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "名称", FillWeight = 30 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "地址", FillWeight = 30 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "名称", FillWeight = 28 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "值状态", FillWeight = 14, ReadOnly = true });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "地址", FillWeight = 28 });
         _controlColumnIndex = _grid.Columns.Add(new DataGridViewButtonColumn
         {
             HeaderText = "按钮",
@@ -193,7 +216,14 @@ public sealed class BoolGroupControlTable : UserControl
             Text = "关闭",
             UseColumnTextForButtonValue = false
         });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "值状态", FillWeight = 20, ReadOnly = true });
+
+        // 列宽策略：值状态/地址/按钮按内容实测宽度固定，名称列 Fill 吸收剩余空间，
+        // 避免长名称显示不全而其他列大量留白
+        _grid.Columns[ColName].AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
+        _grid.Columns[ColName].MinimumWidth = 120;
+        foreach (int col in new[] { ColStatus, ColAddress, ColButton })
+            _grid.Columns[col].AutoSizeMode = DataGridViewAutoSizeColumnMode.None;
+        UpdateColumnWidthsByContent();
 
         _actions.Controls.AddRange([_btnEditAuth, _btnAdd, _btnRemove, _btnRefresh]);
 
@@ -208,12 +238,54 @@ public sealed class BoolGroupControlTable : UserControl
         ApplyGridColumnReadOnly();
     }
 
+    /// <summary>
+    /// 按内容自适应列宽：值状态/地址/按钮列取「表头与各行文本测量值」的最大值并加上内边距，
+    /// 名称列保持 Fill 吸收剩余宽度，避免长名称被截断而其他列大量留白。
+    /// 在数据装载、增删行、名称/地址单元格编辑后调用。
+    /// </summary>
+    private void UpdateColumnWidthsByContent()
+    {
+        if (_grid.Columns.Count < 4)
+            return;
+
+        _grid.Columns[ColStatus].Width = Math.Max(MeasureColumnRequiredWidth(ColStatus), 64);
+        _grid.Columns[ColAddress].Width = Math.Max(MeasureColumnRequiredWidth(ColAddress), 80);
+        _grid.Columns[ColButton].Width = Math.Max(MeasureColumnRequiredWidth(ColButton), 96);
+    }
+
+    private int MeasureColumnRequiredWidth(int columnIndex)
+    {
+        var column = _grid.Columns[columnIndex];
+        if (column is null)
+            return 60;
+
+        var headerFont = _grid.ColumnHeadersDefaultCellStyle.Font ?? _grid.Font;
+        int max = TextRenderer.MeasureText(column.HeaderText, headerFont).Width;
+
+        foreach (DataGridViewRow row in _grid.Rows)
+        {
+            if (row.IsNewRow)
+                continue;
+
+            var cell = row.Cells[columnIndex];
+            string text = Convert.ToString(cell.Value) ?? string.Empty;
+            if (string.IsNullOrEmpty(text))
+                continue;
+
+            var font = cell.InheritedStyle?.Font ?? _grid.Font;
+            max = Math.Max(max, TextRenderer.MeasureText(text, font).Width);
+        }
+
+        return max + 20; // 单元格左右内边距余量
+    }
+
     private void BindEvents()
     {
         _btnEditAuth.Click += (_, _) => ToggleEditAuth();
         _btnAdd.Click += (_, _) =>
         {
-            _grid.Rows.Add(string.Empty, string.Empty, "关闭", string.Empty);
+            _grid.Rows.Add(string.Empty, string.Empty, string.Empty, "关闭");
+            UpdateColumnWidthsByContent();
             SaveConfigToFile();
         };
         _btnRemove.Click += (_, _) =>
@@ -221,6 +293,7 @@ public sealed class BoolGroupControlTable : UserControl
             if (_grid.SelectedRows.Count == 0)
                 return;
             _grid.Rows.RemoveAt(_grid.SelectedRows[0].Index);
+            UpdateColumnWidthsByContent();
             SaveConfigToFile();
         };
         _btnRefresh.Click += async (_, _) => await RefreshStatusAsync();
@@ -229,8 +302,11 @@ public sealed class BoolGroupControlTable : UserControl
             if (!_editUnlocked)
                 return;
 
-            if (e.RowIndex >= 0 && e.ColumnIndex <= 1)
+            if (e.RowIndex >= 0 && (e.ColumnIndex == ColName || e.ColumnIndex == ColAddress))
+            {
+                UpdateColumnWidthsByContent();
                 SaveConfigToFile();
+            }
         };
 
         _grid.CellContentClick += async (_, e) =>
@@ -275,12 +351,14 @@ public sealed class BoolGroupControlTable : UserControl
             return;
         }
 
-        string address = (Convert.ToString(row.Cells[1].Value) ?? string.Empty).Trim();
+        string address = (Convert.ToString(row.Cells[ColAddress].Value) ?? string.Empty).Trim();
         if (!IsSupportedAddress(address))
         {
             SetRowState(row, false, "地址无效", Color.DarkGray);
             return;
         }
+
+        string name = (Convert.ToString(row.Cells[ColName].Value) ?? string.Empty).Trim();
 
         try
         {
@@ -289,12 +367,27 @@ public sealed class BoolGroupControlTable : UserControl
             await plc.WriteBoolAsync(address, next);
             SetRowState(row, next, next ? "ON" : "OFF", next ? Color.LawnGreen : Color.Red);
             LogAction?.Invoke($"BOOL写入成功 {address} <= {next}");
+            LogManualOutput(name, address, current, next, "点击输出点写入成功");
         }
         catch (Exception ex)
         {
             SetRowState(row, false, "ERR", Color.DarkOrange);
             LogAction?.Invoke($"BOOL写入失败 {address}: {ex.Message}");
+            LogManualOutput(name, address, null, null, $"写入失败：{ex.Message}");
         }
+    }
+
+    private void LogManualOutput(string name, string address, bool? before, bool? after, string detail)
+    {
+        ManualOperationLogStore.Write(
+            ManualOperationCategory.Output,
+            DeviceDisplayName,
+            "点击输出点",
+            target: string.IsNullOrWhiteSpace(name) ? "(未命名)" : name,
+            address: address,
+            beforeValue: before is null ? string.Empty : before.Value ? "ON" : "OFF",
+            afterValue: after is null ? string.Empty : after.Value ? "ON" : "OFF",
+            detail: detail);
     }
 
     private static bool IsSupportedAddress(string address)
@@ -315,16 +408,23 @@ public sealed class BoolGroupControlTable : UserControl
 
     private static void SetRowState(DataGridViewRow row, bool state, string statusText, Color color)
     {
-        row.Cells[2].Value = state ? "打开" : "关闭";
-        row.Cells[2].Style.BackColor = state ? Color.Honeydew : Color.MistyRose;
-        row.Cells[2].Style.ForeColor = state ? Color.ForestGreen : Color.Red;
-        row.Cells[2].Style.SelectionBackColor = row.Cells[2].Style.BackColor;
-        row.Cells[2].Style.SelectionForeColor = row.Cells[2].Style.ForeColor;
+        // 名称列不跟状态上色，恢复为继承行/表默认样式
+        DataGridViewCell nameCell = row.Cells[ColName];
+        nameCell.Style.BackColor = Color.Empty;
+        nameCell.Style.ForeColor = Color.Empty;
+        nameCell.Style.SelectionBackColor = Color.Empty;
+        nameCell.Style.SelectionForeColor = Color.Empty;
 
-        row.Cells[3].Value = statusText;
-        row.Cells[3].Style.ForeColor = color;
-        row.Cells[3].Style.SelectionForeColor = color;
-        row.Cells[3].Style.SelectionBackColor = Color.Gainsboro;
+        row.Cells[ColButton].Value = state ? "打开" : "关闭";
+        row.Cells[ColButton].Style.BackColor = state ? Color.Honeydew : Color.MistyRose;
+        row.Cells[ColButton].Style.ForeColor = state ? Color.ForestGreen : Color.Red;
+        row.Cells[ColButton].Style.SelectionBackColor = row.Cells[ColButton].Style.BackColor;
+        row.Cells[ColButton].Style.SelectionForeColor = row.Cells[ColButton].Style.ForeColor;
+
+        row.Cells[ColStatus].Value = statusText;
+        row.Cells[ColStatus].Style.ForeColor = color;
+        row.Cells[ColStatus].Style.SelectionForeColor = color;
+        row.Cells[ColStatus].Style.SelectionBackColor = Color.Gainsboro;
     }
 
     private void LoadConfigFromFile()
@@ -342,8 +442,9 @@ public sealed class BoolGroupControlTable : UserControl
             _suspendSave = true;
             _grid.Rows.Clear();
             foreach (var item in items)
-                _grid.Rows.Add(item.Name, item.Address, "关闭", string.Empty);
+                _grid.Rows.Add(item.Name, string.Empty, item.Address, "关闭");
             _suspendSave = false;
+            UpdateColumnWidthsByContent();
         }
         catch (Exception ex)
         {

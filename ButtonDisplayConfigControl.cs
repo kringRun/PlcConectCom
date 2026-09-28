@@ -1,5 +1,6 @@
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using PlcConectCom.WinForms.Controls;
 
 namespace PlcConectCom.WinFormsTest;
 
@@ -16,6 +17,12 @@ public sealed class ButtonDisplayConfigItem
     public ButtonDisplayControlType ControlType { get; set; } = ButtonDisplayControlType.PLC开关;
 
     public string PlcAddress { get; set; } = string.Empty;
+
+    /// <summary>PLC 开关条件 BOOL 地址（须读为 TRUE）；空则不校验。</summary>
+    public string ConditionPlcAddress { get; set; } = string.Empty;
+
+    /// <summary>配置了条件地址时，仅在写入 TRUE 或写入 FALSE 时进行校验。</summary>
+    public PlcBoolSwitchConditionWhen ConditionWhen { get; set; } = PlcBoolSwitchConditionWhen.写入TRUE时;
 
     public PlcValueType ValueType { get; set; } = PlcValueType.BOOL;
 
@@ -39,6 +46,7 @@ public sealed class ButtonDisplayConfigControl : UserControl
         Dock = DockStyle.Fill,
         AllowUserToAddRows = false,
         AllowUserToDeleteRows = false,
+        AllowUserToResizeColumns = false,
         RowHeadersVisible = false,
         SelectionMode = DataGridViewSelectionMode.FullRowSelect,
         MultiSelect = false,
@@ -57,9 +65,18 @@ public sealed class ButtonDisplayConfigControl : UserControl
     private bool _canModify = true;
     private bool _editUnlocked;
 
-    public ButtonDisplayConfigControl()
+    public ButtonDisplayConfigControl() : this(null) { }
+
+    public ButtonDisplayConfigControl(string? storageKey)
     {
-        _configPath = Path.Combine(AppContext.BaseDirectory, ConfigFileName);
+        string fileName = ConfigFileName;
+        if (!string.IsNullOrWhiteSpace(storageKey))
+        {
+            string safeKey = string.Concat(storageKey.Where(char.IsLetterOrDigit));
+            if (!string.IsNullOrWhiteSpace(safeKey))
+                fileName = $"{Path.GetFileNameWithoutExtension(ConfigFileName)}.{safeKey}{Path.GetExtension(ConfigFileName)}";
+        }
+        _configPath = Path.Combine(AppContext.BaseDirectory, fileName);
         BuildUi();
         BindEvents();
         LoadConfig();
@@ -86,19 +103,26 @@ public sealed class ButtonDisplayConfigControl : UserControl
 
             if (!Enum.TryParse(GetCellString(row, 1), true, out ButtonDisplayControlType controlType))
                 controlType = ButtonDisplayControlType.PLC开关;
-            if (!Enum.TryParse(GetCellString(row, 3), true, out PlcValueType valueType))
+            string conditionAddress = GetCellString(row, 3);
+
+            if (!Enum.TryParse(GetCellString(row, 4), true, out PlcBoolSwitchConditionWhen conditionWhen))
+                conditionWhen = PlcBoolSwitchConditionWhen.写入TRUE时;
+
+            if (!Enum.TryParse(GetCellString(row, 5), true, out PlcValueType valueType))
                 valueType = PlcValueType.BOOL;
 
             int stringLength = 64;
-            _ = int.TryParse(GetCellString(row, 4), out stringLength);
+            _ = int.TryParse(GetCellString(row, 6), out stringLength);
             stringLength = Math.Clamp(stringLength, 1, 512);
-            bool autoReset = ParseBoolCell(GetCellString(row, 5));
+            bool autoReset = ParseBoolCell(GetCellString(row, 7));
 
             list.Add(new ButtonDisplayConfigItem
             {
                 DisplayName = name,
                 ControlType = controlType,
                 PlcAddress = address,
+                ConditionPlcAddress = conditionAddress,
+                ConditionWhen = conditionWhen,
                 ValueType = valueType,
                 StringLength = stringLength,
                 AutoReset = autoReset
@@ -113,7 +137,7 @@ public sealed class ButtonDisplayConfigControl : UserControl
         _suspendAutoSave = true;
         _grid.Rows.Clear();
         foreach (ButtonDisplayConfigItem x in items)
-            _grid.Rows.Add(x.DisplayName, x.ControlType.ToString(), x.PlcAddress, x.ValueType.ToString(), x.StringLength.ToString(), x.AutoReset);
+            _grid.Rows.Add(x.DisplayName, x.ControlType.ToString(), x.PlcAddress, x.ConditionPlcAddress, x.ConditionWhen.ToString(), x.ValueType.ToString(), x.StringLength.ToString(), x.AutoReset);
         _suspendAutoSave = false;
         RaiseConfigurationsChanged();
     }
@@ -147,12 +171,24 @@ public sealed class ButtonDisplayConfigControl : UserControl
         colType.Items.AddRange(Enum.GetNames<ButtonDisplayControlType>());
         _grid.Columns.Add(colType);
 
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "PLC地址", FillWeight = 23 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "PLC地址", FillWeight = 20 });
+
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "条件地址", ToolTipText = "满足校验时机时该地址须读为TRUE；空则不校验", FillWeight = 15 });
+
+        var colConditionWhen = new DataGridViewComboBoxColumn
+        {
+            HeaderText = "条件校验时机",
+            FillWeight = 14,
+            FlatStyle = FlatStyle.Flat,
+            ToolTipText = "配置了条件地址时，仅在向主地址写入TRUE或写入FALSE时检查条件"
+        };
+        colConditionWhen.Items.AddRange(Enum.GetNames<PlcBoolSwitchConditionWhen>());
+        _grid.Columns.Add(colConditionWhen);
 
         var colValueType = new DataGridViewComboBoxColumn
         {
             HeaderText = "数据类型",
-            FillWeight = 14,
+            FillWeight = 11,
             FlatStyle = FlatStyle.Flat
         };
         colValueType.Items.AddRange(Enum.GetNames<PlcValueType>());
@@ -164,8 +200,9 @@ public sealed class ButtonDisplayConfigControl : UserControl
         var toolbar = new FlowLayoutPanel
         {
             Dock = DockStyle.Top,
-            AutoSize = true,
-            WrapContents = false,
+        AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            WrapContents = true,
             Padding = new Padding(0, 0, 0, 4)
         };
         toolbar.Controls.AddRange([_btnEditAuth, _btnAdd, _btnDelete, _btnSave, _btnReload]);
@@ -179,7 +216,7 @@ public sealed class ButtonDisplayConfigControl : UserControl
         _btnEditAuth.Click += (_, _) => ToggleEditAuth();
         _btnAdd.Click += (_, _) =>
         {
-            _grid.Rows.Add("新按钮", ButtonDisplayControlType.PLC开关.ToString(), "MB0", PlcValueType.BOOL.ToString(), "64", false);
+            _grid.Rows.Add("新按钮", ButtonDisplayControlType.PLC开关.ToString(), "MB0", string.Empty, PlcBoolSwitchConditionWhen.写入TRUE时.ToString(), PlcValueType.BOOL.ToString(), "64", false);
             SaveConfig();
             RaiseConfigurationsChanged();
         };

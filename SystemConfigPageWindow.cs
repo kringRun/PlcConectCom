@@ -24,5 +24,7 @@ public partial class SystemConfigPageWindow : UIForm, IPageHostWindow
         _contentHost.Controls.Add(page);
         page.Visible = true;
         page.BringToFront();
+        // 挂载后统一排版：页签/列头用大一号加粗深色，表格数据与按钮用小一号常规浅色
+        ConfigPageTypography.Apply(page);
     }
 }

@@ -447,6 +447,10 @@ public sealed class TaskPipelineRunner : IDisposable
         }
     }
 
+    /// <summary>外部数据源（如 Socket服务端收包分片）更新指定实例的标记最新值，供「Socket分片标记」触发条件取值。</summary>
+    public void UpdateSocketMarkerValues(string? instanceKeyOrName, IReadOnlyDictionary<string, string> map)
+        => UpdateLatestSocketMarkerValues(instanceKeyOrName, map);
+
     private static string BuildSocketMarkerCacheKey(string instanceKey, string markerName) =>
         $"{instanceKey.Trim()}::{markerName.Trim()}";
 

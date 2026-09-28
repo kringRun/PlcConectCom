@@ -135,6 +135,7 @@ public sealed class ParameterTableControl : UserControl
         Dock = DockStyle.Fill,
         AllowUserToAddRows = false,
         AllowUserToDeleteRows = false,
+        AllowUserToResizeColumns = false,
         RowHeadersVisible = false,
         SelectionMode = DataGridViewSelectionMode.FullRowSelect,
         MultiSelect = false,
@@ -158,7 +159,8 @@ public sealed class ParameterTableControl : UserControl
     {
         Dock = DockStyle.Top,
         AutoSize = true,
-        WrapContents = false,
+        AutoSizeMode = AutoSizeMode.GrowAndShrink,
+        WrapContents = true,
         Padding = new Padding(0, 0, 0, 4)
     };
 
@@ -169,6 +171,8 @@ public sealed class ParameterTableControl : UserControl
     private readonly List<ParameterChangeRecord> _records = [];
     private readonly List<ParameterRecipe> _recipes = [];
     private readonly List<string> _keywords = [];
+
+    private static readonly Color ModifiedNameBackColor = Color.FromArgb(255, 243, 176); // 浅黄：相对加载基线有未保存改动
 
     private bool _suspendSave;
     private bool _canAddDelete = true;
@@ -307,7 +311,7 @@ public sealed class ParameterTableControl : UserControl
         {
             string addr = BuildShiftedMdAddress(baseAddress, i);
             double d = await plc.ReadDoubleAsync(addr);
-            parts.Add(d.ToString("G9", CultureInfo.InvariantCulture));
+            parts.Add(d.ToString("F3", CultureInfo.InvariantCulture));
         }
 
         return string.Join("; ", parts);
@@ -339,6 +343,21 @@ public sealed class ParameterTableControl : UserControl
     public Action<string>? LogAction { get; set; }
 
     public Func<bool>? EditPermissionRequest { get; set; }
+
+    /// <summary>
+    /// 为 true 时不将参数变化写入记录文件、不写日志（如程序启动后首次从 PLC 批量读取，避免刷屏与污染历史）。
+    /// </summary>
+    public bool SuppressChangeJournal { get; set; }
+
+    /// <summary>
+    /// 实时工艺数据配置的存储键（与 <see cref="ProcessRealtimeDataConfigControl"/> 一致）。
+    /// 设置后，参数地址落在实时工艺地址集合内的变化不再写入参数变化记录
+    /// （整板时间/待料时间等量持续跳动，会把记录刷满）。
+    /// </summary>
+    public string? ProcessRealtimeStorageKey { get; set; }
+
+    private HashSet<string>? _realtimeExcludeAddresses;
+    private DateTime _realtimeExcludeFileUtc;
 
     public IReadOnlyList<ParameterChangeRecord> GetRecords() => _records;
 
@@ -426,21 +445,50 @@ public sealed class ParameterTableControl : UserControl
         SaveConfig();
     }
 
+    /// <summary>读取当前表格中的参数定义（不含当前值/改写值），供参数调整等页面复用。</summary>
+    public IReadOnlyList<ParameterItem> GetParameters()
+    {
+        return _grid.Rows.Cast<DataGridViewRow>()
+            .Select(ReadParameterItem)
+            .Where(x => x is not null)
+            .Cast<ParameterItem>()
+            .Select(CloneParameterItem)
+            .ToList();
+    }
+
+    private static ParameterItem CloneParameterItem(ParameterItem item) => new()
+    {
+        Name = item.Name,
+        Type = item.Type,
+        Address = item.Address,
+        RealArrayLength = item.RealArrayLength,
+        Comment = item.Comment
+    };
+
     private void BuildUi()
     {
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "参数名", FillWeight = 22 });
+        // 「参数名」按单元格内容自动列宽：参数名长度参差且在表格宽度中占比最高，
+        // 该列用 AllCells（取所有行内容的最宽值），其余列仍由 Fill 按 FillWeight 均分剩余宽度。
+        // AllowUserToResizeColumns=false 时用户无法手动拖拽列宽，拖动 ColumnWidthChanged 无副作用。
+        var nameColumn = new DataGridViewTextBoxColumn
+        {
+            HeaderText = "参数名",
+            AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells,
+            MinimumWidth = 140
+        };
+        _grid.Columns.Add(nameColumn);
 
         var typeColumn = new DataGridViewComboBoxColumn
         {
             HeaderText = "类型",
-            FillWeight = 14,
+            FillWeight = 9,
             DataSource = Enum.GetNames<ParameterValueType>()
         };
         _grid.Columns.Add(typeColumn);
 
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "地址", FillWeight = 20 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "当前值", FillWeight = 25, ReadOnly = true });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "改写值", FillWeight = 25 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "地址", FillWeight = 13 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "当前值", FillWeight = 10, ReadOnly = true });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "改写值", FillWeight = 10 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "注释", FillWeight = 20 });
 
         _actionsRow.Controls.AddRange([_btnEditAuth, _btnAdd, _btnRemove, _btnReadAll, _btnWriteSelected, _btnSaveRecipe, _btnLoadRecipe, _btnSaveAll, _btnViewRecords, _cmbKeyword, _btnSearch, _btnClearKeyword]);
@@ -448,6 +496,84 @@ public sealed class ParameterTableControl : UserControl
 
         Controls.Add(_grid);
         Controls.Add(_actionsRow);
+
+        _grid.CellFormatting += Grid_CellFormatting;
+        _grid.CurrentCellDirtyStateChanged += (_, _) =>
+        {
+            if (_grid.IsCurrentCellDirty)
+                _grid.CommitEdit(DataGridViewDataErrorContexts.Commit);
+        };
+    }
+
+    private void Grid_CellFormatting(object? sender, DataGridViewCellFormattingEventArgs e)
+    {
+        if (e.RowIndex < 0 || e.ColumnIndex != 0 || e.CellStyle is null)
+            return;
+        if (e.RowIndex >= _grid.Rows.Count)
+            return;
+
+        DataGridViewRow row = _grid.Rows[e.RowIndex];
+        if (!IsRowValueModified(row))
+            return;
+
+        e.CellStyle.BackColor = ModifiedNameBackColor;
+        e.CellStyle.SelectionBackColor = Color.FromArgb(245, 220, 120);
+    }
+
+    /// <summary>加载基线保存在名称列 Tag；有效值（优先改写值，否则当前值）相对基线有变化则视为已修改。</summary>
+    private static bool IsRowValueModified(DataGridViewRow row)
+    {
+        if (row.Cells.Count <= 4)
+            return false;
+        if (row.Cells[0].Tag is not string original)
+            return false;
+
+        string writeValue = Convert.ToString(row.Cells[4].Value, CultureInfo.InvariantCulture)?.Trim() ?? string.Empty;
+        string currentValue = Convert.ToString(row.Cells[3].Value, CultureInfo.InvariantCulture)?.Trim() ?? string.Empty;
+        string effective = !string.IsNullOrWhiteSpace(writeValue) ? writeValue : currentValue;
+
+        string typeText = Convert.ToString(row.Cells[1].Value, CultureInfo.InvariantCulture)?.Trim() ?? string.Empty;
+        if (Enum.TryParse(typeText, true, out ParameterValueType type) && type == ParameterValueType.BOOL)
+        {
+            if (TryParseBoolLoose(original, out bool originalBool) && TryParseBoolLoose(effective, out bool effectiveBool))
+                return originalBool != effectiveBool;
+        }
+
+        return !string.Equals(original.Trim(), effective, StringComparison.Ordinal);
+    }
+
+    private static bool TryParseBoolLoose(string? text, out bool value)
+    {
+        value = false;
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        text = text.Trim();
+        if (bool.TryParse(text, out value))
+            return true;
+        if (string.Equals(text, "1", StringComparison.Ordinal)
+            || string.Equals(text, "ON", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(text, "是", StringComparison.Ordinal))
+        {
+            value = true;
+            return true;
+        }
+
+        if (string.Equals(text, "0", StringComparison.Ordinal)
+            || string.Equals(text, "OFF", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(text, "否", StringComparison.Ordinal))
+        {
+            value = false;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static void SetLoadedBaseline(DataGridViewRow row, string? value)
+    {
+        if (row.Cells.Count > 0)
+            row.Cells[0].Tag = value;
     }
 
     /// <summary>统一应用顶部操作按钮颜色（不影响关键字下拉框）。</summary>
@@ -501,7 +627,7 @@ public sealed class ParameterTableControl : UserControl
         _btnSaveRecipe.Click += (_, _) => SaveRecipeFromGrid();
         _btnLoadRecipe.Click += (_, _) => LoadRecipeToGrid();
         _btnSaveAll.Click += async (_, _) => await SaveAllToPlcAndLocalAsync();
-        _btnViewRecords.Click += (_, _) => ShowRecords();
+        _btnViewRecords.Click += (_, _) => ShowParameterChangeRecordsDialog(FindForm());
         _btnSearch.Click += (_, _) => ApplyKeywordFilter(saveKeyword: true);
         _btnClearKeyword.Click += (_, _) => ClearKeywords();
         _cmbKeyword.KeyDown += (_, e) =>
@@ -516,6 +642,9 @@ public sealed class ParameterTableControl : UserControl
 
         _grid.CellValueChanged += (_, e) =>
         {
+            if (e.RowIndex >= 0 && (e.ColumnIndex == 3 || e.ColumnIndex == 4))
+                _grid.InvalidateCell(0, e.RowIndex);
+
             if (_suspendSave)
                 return;
 
@@ -640,6 +769,8 @@ public sealed class ParameterTableControl : UserControl
 
         foreach (DataGridViewRow row in _grid.Rows)
             await ReadRowAsync(plc, row);
+
+        _grid.InvalidateColumn(0);
     }
 
     public async Task WriteSelectedAsync()
@@ -695,6 +826,7 @@ public sealed class ParameterTableControl : UserControl
         }
 
         SaveConfig();
+        _grid.InvalidateColumn(0);
         LogAction?.Invoke($"保存全部完成：成功 {okCount} 条，跳过/失败 {skipCount} 条；已保存本地参数文件。");
     }
 
@@ -714,7 +846,7 @@ public sealed class ParameterTableControl : UserControl
                 ParameterValueType.BOOL => (await plc.ReadBoolAsync(item.Address)).ToString(CultureInfo.InvariantCulture),
                 ParameterValueType.INT => (await plc.ReadIntAsync(item.Address)).ToString(CultureInfo.InvariantCulture),
                 ParameterValueType.DWORD => (await plc.ReadDWordAsync(item.Address)).ToString(CultureInfo.InvariantCulture),
-                ParameterValueType.REAL => (await plc.ReadDoubleAsync(item.Address)).ToString(CultureInfo.InvariantCulture),
+                ParameterValueType.REAL => (await plc.ReadDoubleAsync(item.Address)).ToString("F3", CultureInfo.InvariantCulture),
                 ParameterValueType.REAL_ARRAY when item.RealArrayLength > 0 =>
                     await ReadRealArrayDisplayAsync(plc, item.Address, item.RealArrayLength),
                 ParameterValueType.STRING => await plc.ReadStringAsync(item.Address, StringReadLength),
@@ -722,6 +854,7 @@ public sealed class ParameterTableControl : UserControl
             };
 
             row.Cells[3].Value = newValue;
+            SetLoadedBaseline(row, newValue);
 
             if (!string.Equals(oldValue, newValue, StringComparison.Ordinal))
                 AppendRecord(item, "读取变化", oldValue, newValue);
@@ -801,6 +934,9 @@ public sealed class ParameterTableControl : UserControl
             }
 
             row.Cells[3].Value = writeValue;
+            SetLoadedBaseline(row, writeValue);
+            _grid.InvalidateCell(0, row.Index);
+
             if (!string.Equals(oldValue, writeValue, StringComparison.Ordinal))
                 AppendRecord(item, "改写变化", oldValue, writeValue);
 
@@ -882,6 +1018,14 @@ public sealed class ParameterTableControl : UserControl
 
     private void AppendRecord(ParameterItem item, string action, string oldValue, string newValue)
     {
+        if (SuppressChangeJournal)
+            return;
+
+        // 实时工艺地址（整板时间/待料时间等每秒都在变的量）不进入参数变化记录；
+        // 静默跳过，不写主日志，避免把运行日志也刷满。
+        if (IsRealtimeExcludedAddress(item.Address))
+            return;
+
         var record = new ParameterChangeRecord
         {
             Timestamp = DateTime.Now,
@@ -897,6 +1041,71 @@ public sealed class ParameterTableControl : UserControl
         LogAction?.Invoke($"参数变化 {record.Address}: {oldValue} -> {newValue} ({action})");
     }
 
+    /// <summary>判断地址是否属于实时工艺数据配置（命中则不记参数变化）。</summary>
+    private bool IsRealtimeExcludedAddress(string? address)
+    {
+        if (string.IsNullOrWhiteSpace(ProcessRealtimeStorageKey) || string.IsNullOrWhiteSpace(address))
+            return false;
+
+        RefreshRealtimeExcludeCache();
+        if (_realtimeExcludeAddresses is not { Count: > 0 })
+            return false;
+
+        string trimmed = address.Trim();
+        if (_realtimeExcludeAddresses.Contains(trimmed))
+            return true;
+
+        try
+        {
+            // 规范化比较，避免 MD4101 / md4101 之类写法差异漏判
+            var (type, offset, bit) = global::PlcConectCom.AddressParser.ParseAddress(trimmed);
+            return _realtimeExcludeAddresses.Contains($"{type}:{offset}:{bit}");
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>按文件最后写入时间缓存实时工艺地址集合；配置文件变更后自动重载。</summary>
+    private void RefreshRealtimeExcludeCache()
+    {
+        string fileName = ProcessRealtimeDataConfigControl.ConfigFileName;
+        if (!string.IsNullOrWhiteSpace(ProcessRealtimeStorageKey))
+        {
+            // 与 ProcessRealtimeDataConfigControl 的存储键规则保持一致（仅保留字母数字）
+            string safeKey = string.Concat(ProcessRealtimeStorageKey.Where(char.IsLetterOrDigit));
+            if (!string.IsNullOrWhiteSpace(safeKey))
+                fileName = $"{Path.GetFileNameWithoutExtension(fileName)}.{safeKey}{Path.GetExtension(fileName)}";
+        }
+
+        string path = Path.Combine(AppContext.BaseDirectory, fileName);
+        DateTime lastUtc = File.Exists(path) ? File.GetLastWriteTimeUtc(path) : DateTime.MinValue;
+        if (_realtimeExcludeAddresses is not null && lastUtc == _realtimeExcludeFileUtc)
+            return;
+
+        _realtimeExcludeFileUtc = lastUtc;
+        var addresses = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var realtimeItem in ProcessRealtimeDataConfigControl.LoadConfiguredItems(ProcessRealtimeStorageKey))
+        {
+            if (string.IsNullOrWhiteSpace(realtimeItem.Address))
+                continue;
+
+            addresses.Add(realtimeItem.Address.Trim());
+            try
+            {
+                var (type, offset, bit) = global::PlcConectCom.AddressParser.ParseAddress(realtimeItem.Address.Trim());
+                addresses.Add($"{type}:{offset}:{bit}");
+            }
+            catch
+            {
+                // 无法解析的地址只按原文比较
+            }
+        }
+
+        _realtimeExcludeAddresses = addresses;
+    }
+
     private void RemoveCurrentRow()
     {
         if (_grid.SelectedRows.Count == 0)
@@ -906,8 +1115,16 @@ public sealed class ParameterTableControl : UserControl
         SaveConfig();
     }
 
-    private void ShowRecords()
+    /// <summary>弹出「参数变化记录」窗口（与「查看记录」相同）；打开前从磁盘重新加载记录文件。</summary>
+    public void ShowParameterChangeRecordsDialog(IWin32Window? owner)
     {
+        LoadRecords();
+        ShowParameterChangeRecordsDialogCore(owner);
+    }
+
+    private void ShowParameterChangeRecordsDialogCore(IWin32Window? owner)
+    {
+        IWin32Window showOwner = owner ?? (IWin32Window)this;
         using var dialog = new Form
         {
             Text = "参数变化记录",
@@ -922,6 +1139,7 @@ public sealed class ParameterTableControl : UserControl
             ReadOnly = true,
             AllowUserToAddRows = false,
             AllowUserToDeleteRows = false,
+            AllowUserToResizeColumns = false,
             RowHeadersVisible = false,
             AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill
         };
@@ -1000,7 +1218,7 @@ public sealed class ParameterTableControl : UserControl
             if (_records.Count == 0)
                 return;
 
-            var result = MessageBox.Show(this, "确认清空所有参数变化记录吗？", "确认", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            var result = MessageBox.Show(dialog, "确认清空所有参数变化记录吗？", "确认", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
             if (result != DialogResult.Yes)
                 return;
 
@@ -1023,7 +1241,8 @@ public sealed class ParameterTableControl : UserControl
         BindRecords(_records);
         dialog.Controls.Add(recordGrid);
         dialog.Controls.Add(toolPanel);
-        dialog.ShowDialog(this);
+        DataGridViewNoSortHelper.WireControlSubtreeForNoColumnSort(dialog);
+        AppDialog.ShowDialog(dialog, showOwner);
     }
 
     private void SaveRecipeFromGrid()
@@ -1136,7 +1355,7 @@ public sealed class ParameterTableControl : UserControl
         dialog.AcceptButton = btnOk;
         dialog.CancelButton = btnCancel;
 
-        return dialog.ShowDialog() == DialogResult.OK ? txt.Text : null;
+        return AppDialog.ShowDialog(dialog) == DialogResult.OK ? txt.Text : null;
     }
 
     private static string NormalizeRecipeValue(ParameterValueType type, string? value)
@@ -1194,7 +1413,7 @@ public sealed class ParameterTableControl : UserControl
         dialog.AcceptButton = btnOk;
         dialog.CancelButton = btnCancel;
 
-        return dialog.ShowDialog(this) == DialogResult.OK ? cmb.SelectedItem?.ToString() : null;
+        return AppDialog.ShowDialog(dialog, this) == DialogResult.OK ? cmb.SelectedItem?.ToString() : null;
     }
 
     private void LoadConfig()

@@ -339,8 +339,10 @@ partial class HB_HMI_MainForm
         // 
         AutoScaleMode = AutoScaleMode.None;
         ClientSize = new Size(1920, 1080);
+        MinimumSize = new Size(800, 600);
         Name = "HB_HMI_MainForm";
         Text = "PLC 运行平台";
+        WindowState = FormWindowState.Maximized;
         ZoomScaleRect = new Rectangle(15, 15, 1920, 1080);
         _mainSplit.Panel1.ResumeLayout(false);
         _mainSplit.Panel2.ResumeLayout(false);

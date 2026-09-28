@@ -105,6 +105,7 @@ partial class RecordsPageWindow
         _previewSplit.TabIndex = 1;
         _alarmGridPreview.AllowUserToAddRows = false;
         _alarmGridPreview.AllowUserToDeleteRows = false;
+        _alarmGridPreview.AllowUserToResizeColumns = false;
         _alarmGridPreview.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
         _alarmGridPreview.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.AutoSize;
         _alarmGridPreview.Dock = DockStyle.Fill;

@@ -1,0 +1,920 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>HB_HMI 项目结构图 · 安全改模块指南</title>
+<style>
+  :root {
+    --bg: #0f1419;
+    --bg2: #1a2332;
+    --panel: #1e2a3a;
+    --panel2: #243447;
+    --line: #3d5270;
+    --text: #e8eef6;
+    --muted: #8fa3bb;
+    --accent: #2bb8a6;
+    --accent2: #f0a030;
+    --danger: #e85d5d;
+    --warn: #e8b84a;
+    --safe: #4cbe7a;
+    --mid: #5b9fd4;
+    --font: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    --mono: "Cascadia Code", "Consolas", monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: var(--font);
+    background:
+      radial-gradient(ellipse 80% 50% at 10% -10%, #1a3a4a 0%, transparent 50%),
+      radial-gradient(ellipse 60% 40% at 90% 0%, #2a2818 0%, transparent 45%),
+      var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    line-height: 1.45;
+  }
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    backdrop-filter: blur(12px);
+    background: rgba(15, 20, 25, 0.88);
+    border-bottom: 1px solid var(--line);
+    padding: 14px 24px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px 20px;
+    align-items: center;
+    justify-content: space-between;
+  }
+  header h1 {
+    margin: 0;
+    font-size: 1.15rem;
+    font-weight: 650;
+    letter-spacing: 0.02em;
+  }
+  header h1 span { color: var(--accent); font-weight: 500; font-size: 0.85rem; margin-left: 8px; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .toolbar input {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    color: var(--text);
+    padding: 7px 12px;
+    border-radius: 6px;
+    min-width: 200px;
+    font: inherit;
+  }
+  .toolbar input:focus { outline: 2px solid var(--accent); outline-offset: 0; }
+  .chip {
+    border: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--muted);
+    padding: 5px 10px;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    cursor: pointer;
+    user-select: none;
+  }
+  .chip.active { border-color: var(--accent); color: var(--accent); background: #1a3330; }
+  .chip.risk-safe.active { border-color: var(--safe); color: var(--safe); background: #1a3324; }
+  .chip.risk-mid.active { border-color: var(--warn); color: var(--warn); background: #332a1a; }
+  .chip.risk-high.active { border-color: var(--danger); color: var(--danger); background: #331a1a; }
+  main { max-width: 1280px; margin: 0 auto; padding: 20px 20px 60px; }
+  .hero {
+    display: grid;
+    grid-template-columns: 1.4fr 1fr;
+    gap: 16px;
+    margin-bottom: 22px;
+  }
+  @media (max-width: 900px) { .hero { grid-template-columns: 1fr; } }
+  .card {
+    background: linear-gradient(160deg, var(--panel) 0%, var(--bg2) 100%);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px 18px;
+  }
+  .card h2 {
+    margin: 0 0 10px;
+    font-size: 0.95rem;
+    color: var(--accent);
+    font-weight: 650;
+  }
+  .card p, .card li { color: var(--muted); font-size: 0.88rem; }
+  .card ul { margin: 0; padding-left: 1.15rem; }
+  .card li { margin: 4px 0; }
+  .rule {
+    border-left: 3px solid var(--accent2);
+    padding: 8px 12px;
+    background: #2a2418;
+    border-radius: 0 6px 6px 0;
+    font-size: 0.86rem;
+    color: #f0e0c0;
+    margin-top: 10px;
+  }
+
+  /* Flow diagram */
+  .section-title {
+    margin: 28px 0 12px;
+    font-size: 1.05rem;
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+  .section-title small { color: var(--muted); font-weight: 400; font-size: 0.8rem; }
+
+  .flow {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+  }
+  .flow-row {
+    display: flex;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 6px 0;
+  }
+  .arrow-down {
+    text-align: center;
+    color: var(--line);
+    font-size: 1.1rem;
+    line-height: 1;
+    padding: 2px 0;
+  }
+  .node {
+    border: 1px solid var(--line);
+    background: var(--panel2);
+    border-radius: 8px;
+    padding: 10px 14px;
+    min-width: 140px;
+    max-width: 280px;
+    cursor: pointer;
+    transition: border-color .15s, transform .15s, box-shadow .15s;
+    position: relative;
+  }
+  .node:hover, .node.selected {
+    border-color: var(--accent);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 16px rgba(43, 184, 166, 0.15);
+  }
+  .node.dim { opacity: 0.22; pointer-events: none; }
+  .node .name { font-weight: 600; font-size: 0.88rem; }
+  .node .file { font-family: var(--mono); font-size: 0.72rem; color: var(--muted); margin-top: 2px; }
+  .node .tag {
+    display: inline-block;
+    margin-top: 6px;
+    font-size: 0.68rem;
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-weight: 600;
+  }
+  .tag-safe { background: #1e3d2a; color: var(--safe); }
+  .tag-mid { background: #3d3218; color: var(--warn); }
+  .tag-high { background: #3d1e1e; color: var(--danger); }
+  .tag-ext { background: #1e2d3d; color: var(--mid); }
+  .tag-kernel { background: #3d2a18; color: var(--accent2); }
+
+  .nav-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 10px;
+  }
+  .nav-item {
+    border: 1px solid var(--line);
+    background: var(--panel);
+    border-radius: 8px;
+    padding: 12px;
+    cursor: pointer;
+    transition: border-color .15s;
+  }
+  .nav-item:hover, .nav-item.selected { border-color: var(--accent); }
+  .nav-item.dim { opacity: 0.22; pointer-events: none; }
+  .nav-item .btn { color: var(--accent); font-size: 0.78rem; font-weight: 600; }
+  .nav-item .win { font-weight: 650; margin: 4px 0 2px; font-size: 0.9rem; }
+  .nav-item .panel { font-family: var(--mono); font-size: 0.72rem; color: var(--muted); }
+  .nav-item .note { font-size: 0.78rem; color: var(--muted); margin-top: 6px; }
+
+  .modules {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 12px;
+  }
+  .mod {
+    border: 1px solid var(--line);
+    background: var(--panel);
+    border-radius: 10px;
+    overflow: hidden;
+    cursor: pointer;
+    transition: border-color .15s;
+  }
+  .mod:hover, .mod.selected { border-color: var(--accent); }
+  .mod.dim { opacity: 0.18; pointer-events: none; }
+  .mod-head {
+    padding: 12px 14px;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 8px;
+    border-bottom: 1px solid transparent;
+  }
+  .mod.open .mod-head { border-bottom-color: var(--line); background: var(--panel2); }
+  .mod-head h3 { margin: 0; font-size: 0.92rem; }
+  .mod-head .risk { font-size: 0.68rem; padding: 2px 7px; border-radius: 4px; font-weight: 700; white-space: nowrap; }
+  .mod-body {
+    display: none;
+    padding: 12px 14px 14px;
+    font-size: 0.82rem;
+    color: var(--muted);
+  }
+  .mod.open .mod-body { display: block; }
+  .mod-body strong { color: var(--text); font-weight: 600; }
+  .mod-body code {
+    font-family: var(--mono);
+    font-size: 0.76rem;
+    background: var(--bg);
+    padding: 1px 5px;
+    border-radius: 3px;
+    color: #b8d4e8;
+  }
+  .file-list { margin: 8px 0 0; padding: 0; list-style: none; }
+  .file-list li {
+    padding: 5px 0;
+    border-top: 1px dashed #2a3a4a;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 6px;
+  }
+  .file-list .fn { font-family: var(--mono); font-size: 0.74rem; color: #c5d8ea; }
+  .file-list .fr { font-size: 0.72rem; }
+
+  .deps {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 10px;
+  }
+  .dep {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 12px;
+    background: var(--panel);
+  }
+  .dep h4 { margin: 0 0 6px; font-size: 0.88rem; }
+  .dep p { margin: 0; font-size: 0.8rem; color: var(--muted); }
+  .dep.high { border-color: #6a3030; }
+  .dep.mid { border-color: #6a5530; }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px 18px;
+    margin: 8px 0 16px;
+    font-size: 0.78rem;
+    color: var(--muted);
+  }
+  .legend i {
+    display: inline-block;
+    width: 10px; height: 10px;
+    border-radius: 2px;
+    margin-right: 5px;
+    vertical-align: -1px;
+  }
+
+  /* Detail drawer */
+  #drawer {
+    position: fixed;
+    right: 0; top: 0; bottom: 0;
+    width: min(380px, 100%);
+    background: var(--bg2);
+    border-left: 1px solid var(--line);
+    transform: translateX(100%);
+    transition: transform .2s ease;
+    z-index: 100;
+    padding: 20px;
+    overflow-y: auto;
+    box-shadow: -8px 0 32px rgba(0,0,0,.4);
+  }
+  #drawer.open { transform: translateX(0); }
+  #drawer h3 { margin: 0 0 8px; font-size: 1.05rem; }
+  #drawer .close {
+    position: absolute; top: 12px; right: 14px;
+    background: none; border: 1px solid var(--line);
+    color: var(--muted); border-radius: 6px;
+    width: 32px; height: 32px; cursor: pointer; font-size: 1.1rem;
+  }
+  #drawer .close:hover { color: var(--text); border-color: var(--accent); }
+  #drawer .meta { font-family: var(--mono); font-size: 0.75rem; color: var(--muted); margin-bottom: 12px; }
+  #drawer .block { margin: 12px 0; }
+  #drawer .block label {
+    display: block; font-size: 0.72rem; color: var(--accent);
+    text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 4px;
+  }
+  #drawer .block div { font-size: 0.86rem; color: var(--muted); }
+  #backdrop {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,.35); z-index: 90;
+  }
+  #backdrop.open { display: block; }
+
+  footer {
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.75rem;
+    padding: 20px;
+    border-top: 1px solid var(--line);
+    margin-top: 40px;
+  }
+  .tree {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    line-height: 1.65;
+    color: #a8c0d4;
+    white-space: pre;
+    overflow-x: auto;
+    background: var(--bg);
+    border-radius: 8px;
+    padding: 14px 16px;
+    border: 1px solid var(--line);
+  }
+  .highlight { background: #2a4038; color: var(--accent); border-radius: 2px; padding: 0 2px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>HB_HMI 项目结构图 <span>改模块前看边界 · 降低连带风险</span></h1>
+  <div class="toolbar">
+    <input id="search" type="search" placeholder="搜索模块 / 文件名…" autocomplete="off" />
+    <span class="chip active" data-filter="all">全部</span>
+    <span class="chip risk-safe" data-filter="safe">低风险</span>
+    <span class="chip risk-mid" data-filter="mid">中风险</span>
+    <span class="chip risk-high" data-filter="high">高风险</span>
+  </div>
+</header>
+
+<main>
+  <div class="hero">
+    <div class="card">
+      <h2>一句话架构</h2>
+      <p>
+        <code style="font-family:var(--mono);color:#b8d4e8">Program</code>
+        → 授权 →
+        <strong style="color:var(--accent2)">HB_HMI_MainForm (Form1)</strong>
+        拥有几乎所有业务控件；各
+        <code style="font-family:var(--mono);color:#b8d4e8">*PageWindow</code>
+        只是薄宿主，用 <code style="font-family:var(--mono);color:#b8d4e8">IPageHostWindow.AttachPage</code>
+        把 Form1 里建好的面板「挪」进去显示。
+      </p>
+      <div class="rule">
+        实操原则：优先改「叶子控件 + 其 JSON 契约不变」；动 Form1 / PlcProvider / 任务流水线 / 页面挂载时，必须做主页↔调试独占↔报警↔任务↔相机 全路径冒烟。
+      </div>
+    </div>
+    <div class="card">
+      <h2>风险图例</h2>
+      <ul>
+        <li><span class="tag tag-safe">低</span> 相对隔离，可单独改 UI/实现</li>
+        <li><span class="tag tag-mid">中</span> 与 Form1 或同域控件有契约耦合</li>
+        <li><span class="tag tag-high">高</span> 共享内核，改动易波及全局</li>
+        <li><span class="tag tag-ext">外部</span> 独立工程 / DLL，改接口需两边对齐</li>
+      </ul>
+      <p style="margin-top:10px">点击任意模块或节点，右侧查看文件列表、依赖与建议改法。</p>
+    </div>
+  </div>
+
+  <!-- ========== Startup flow ========== -->
+  <div class="section-title">1. 启动与外壳 <small>点击节点查看详情</small></div>
+  <div class="flow" id="startup-flow">
+    <div class="flow-row">
+      <div class="node" data-id="program" data-risk="safe">
+        <div class="name">Program.Main</div>
+        <div class="file">Program.cs</div>
+        <span class="tag tag-safe">低</span>
+      </div>
+    </div>
+    <div class="arrow-down">▼</div>
+    <div class="flow-row">
+      <div class="node" data-id="license" data-risk="safe">
+        <div class="name">LicenseAuthorization</div>
+        <div class="file">LicenseAuthorization.cs</div>
+        <span class="tag tag-safe">低</span>
+      </div>
+    </div>
+    <div class="arrow-down">▼</div>
+    <div class="flow-row">
+      <div class="node" data-id="form1" data-risk="high" style="min-width:260px;border-color:#6a4030">
+        <div class="name">HB_HMI_MainForm ★内核</div>
+        <div class="file">Form1.cs (~5k 行)</div>
+        <span class="tag tag-kernel">高 · 上帝外壳</span>
+      </div>
+    </div>
+    <div class="arrow-down">▼ 导航打开页面窗体（reparent 面板）</div>
+  </div>
+
+  <!-- ========== Nav pages ========== -->
+  <div class="section-title">2. 导航 → 页面宿主 <small>内容面板均在 Form1 中创建</small></div>
+  <div class="legend">
+    <span><i style="background:var(--accent)"></i>导航按钮</span>
+    <span><i style="background:var(--warn)"></i>PLC 独占（调试页）</span>
+    <span><i style="background:var(--mid)"></i>外部窗体</span>
+  </div>
+  <div class="nav-grid" id="nav-grid"></div>
+
+  <!-- ========== Domain modules ========== -->
+  <div class="section-title">3. 业务模块（按域） <small>展开看文件与边界</small></div>
+  <div class="modules" id="modules"></div>
+
+  <!-- ========== Shared cores ========== -->
+  <div class="section-title">4. 高风险共享内核 <small>改这些先评估影响面</small></div>
+  <div class="deps" id="cores"></div>
+
+  <!-- ========== External ========== -->
+  <div class="section-title">5. 外部依赖工程</div>
+  <div class="deps" id="externals"></div>
+
+  <!-- ========== Tree ========== -->
+  <div class="section-title">6. 目录树速览</div>
+  <div class="tree" id="tree"></div>
+
+  <!-- ========== Safe checklist ========== -->
+  <div class="section-title">7. 改模块检查清单</div>
+  <div class="card">
+    <ul>
+      <li><strong style="color:var(--safe)">先定边界</strong>：目标是叶子控件还是 Form1 接线？JSON schema 会不会变？</li>
+      <li><strong style="color:var(--warn)">查同 JSON 消费者</strong>：BoolSignal 配置被监控页与矩阵嵌入共用；轴组名被位置表解析。</li>
+      <li><strong style="color:var(--danger)">碰 PlcProvider / 调试独占</strong>：主 UI 的 ProvidePlcForMainUi 在调试独占时会返回 null，报警/任务可能受影响。</li>
+      <li><strong style="color:var(--mid)">页面空白排查</strong>：优先查 IPageHostWindow.AttachPage 与控件 Parent 是否被重复挂载。</li>
+      <li><strong style="color:var(--accent)">冒烟路径</strong>：主页显示 → 系统配置读写 → 调试页独占 → 报警触发 → 任务一步 → 记录查询。</li>
+    </ul>
+  </div>
+  <div class="section-title">8. 修改影响导航 <small>源码核对：2026-09-28 · 选择改动目标</small></div>
+  <div class="card">
+    <p>这是当前源码的静态结构快照，风险表示建议回归范围，不保证修改后没有连带影响。外部工程仅核对本项目的引用和调用边界，未审计其内部实现。下面箭头表示调用、注入或数据传递，具体含义写在连线上。</p>
+    <label for="change-target">准备修改：</label>
+    <select id="change-target" style="padding:10px;max-width:100%;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:6px"></select>
+    <div id="impact-view" aria-live="polite" style="margin-top:18px"></div>
+  </div>
+  <div class="section-title">9. 已核实的跨模块链路</div>
+  <div class="card" style="overflow:auto">
+    <div class="tree" style="white-space:pre-wrap">Program.Main ──授权通过──→ HB_HMI_MainForm（Form1.cs）
+    ├──AttachPage(panel)──→ 页面宿主（主 / 配置 / 调试 / 监控 / 记录 / 产能）
+    ├──ProvidePlcForMainUi──→ 主界面、报警、通信、任务等
+    ├──ProvidePlcForDebugToolsPage──→ 轴组、位置表、输出点位、输入矩阵
+    └──ConfigureExternalPlcBridge──→ HB_CameraUI（外部 DLL）
+
+TaskSettingsControl ──GetAutomatedTasks 委托──→ TaskPipelineRunner
+TaskPipelineRunner ──执行动作委托──→ CommunicationConfigControl.ExecuteTaskActionAsync
+AlarmAddressManagerControl ──AlarmTriggered，经 Form1 接线──→ TaskPipelineRunner.OnAlarmTriggered
+AlarmAddressManagerControl ──AlarmTriggered，经 Form1 处理──→ 报警历史 / 主界面
+
+BoolSignalCollection.config.json ──共同读取──→ 状态监控 + BoolSignalMatrixEmbedControl
+各显示配置控件 ──ConfigurationsChanged，经 Form1 接线──→ 主界面控件重建</div>
+    <p>核对位置：Form1.cs:632–633、835–922、925–939、2211–2218；TaskPipelineRunner.cs:182–193；MainPageWindow.cs:12。行号随源码修改可能变化，应同时按方法名搜索。</p>
+    <p>调试独占有例外：Form1.cs:4277–4301 会临时切换主页部分按钮的 PlcProvider，因此不能把“主 UI 获取不到 PLC”理解为“所有主页按钮都无法操作”。</p>
+  </div>
+  <div class="section-title">10. 修改前后执行顺序</div>
+  <div class="card"><ol>
+    <li>备份当前源码和实际运行目录内的配置 / 数据库，记录修改前行为。</li>
+    <li>在上方选择模块，按文件和方法名定位；先确认公开属性、事件参数、JSON 字段和 PLC 地址语义是否变化。</li>
+    <li>一次修改一个职责；若改变共享契约，同步核对所有消费者与旧配置兼容。</li>
+    <li>编译 PlcConectCom.WinFormsTest.csproj；本项目还依赖兄弟工程以及 HintPath 指向的 DLL，缺少依赖时先恢复依赖。</li>
+    <li>执行所选模块回归项，再检查主页、调试切换、报警、任务、记录查询。PLC 写入类验证应在可控测试环境完成。</li>
+    <li>重启后检查配置是否保留、日志是否新增异常；通过后再部署。本图未替代编译和运行验证。</li>
+  </ol></div>
+</main>
+
+<footer>
+  生成自 PlcConectCom.WinFormsTest 源码结构 · 本地打开本 HTML 即可 · 路径 docs/project-structure.html
+</footer>
+
+<div id="backdrop"></div>
+<aside id="drawer">
+  <button class="close" id="drawer-close" aria-label="关闭">×</button>
+  <h3 id="d-title">—</h3>
+  <div class="meta" id="d-meta"></div>
+  <div class="block"><label>职责</label><div id="d-desc"></div></div>
+  <div class="block"><label>依赖 / 影响</label><div id="d-deps"></div></div>
+  <div class="block"><label>建议改法</label><div id="d-tip"></div></div>
+  <div class="block"><label>相关文件</label><div id="d-files"></div></div>
+</aside>
+
+<script>
+const NAV = [
+  { id: "nav-main", btn: "主页面", win: "MainPageWindow", panel: "_mainPage", note: "报警 / 工艺实时 / 覆盖按钮 / BoolLabel / ValueTextBox / 工站；可嵌 CustemerUI", risk: "mid", files: ["MainPageWindow.cs", "Form1.cs"] },
+  { id: "nav-sys", btn: "系统配置", win: "SystemConfigPageWindow", panel: "_debugPage + _debugTab", note: "参数×3、报警、弹窗、任务、通讯、工站配置、按钮/标签配置、相机线程启动…", risk: "high", files: ["SystemConfigPageWindow.cs", "Form1.cs"] },
+  { id: "nav-dbg", btn: "调试按钮", win: "DebugToolsPageWindow", panel: "_debugToolsPage", note: "★ PLC 独占：轴组+位置参数 | 输出点位+输入矩阵", risk: "high", files: ["DebugToolsPageWindow.cs", "Form1.cs"] },
+  { id: "nav-st", btn: "工站控制", win: "Popup Form", panel: "_stationAreaPanel", note: "弹窗 reparent 工站区", risk: "mid", files: ["Form1.cs", "StationOperationStatusControl.cs"] },
+  { id: "nav-cam", btn: "相机调试", win: "THCamSetHostForm", panel: "HB_CameraUI", note: "外部 DLL；经 IExternalPlcBridge 读 PLC", risk: "mid", files: ["Form1.cs"] },
+  { id: "nav-mon", btn: "状态监控", win: "MonitorPageWindow", panel: "_monitorPage", note: "BoolSignalCollection + 相机线程表", risk: "mid", files: ["MonitorPageWindow.cs", "BoolSignalCollectionControl.cs"] },
+  { id: "nav-rec", btn: "记录查询", win: "RecordsPageWindow", panel: "_recordsPage", note: "报警历史 SQLite 筛选导出", risk: "safe", files: ["RecordsPageWindow.cs"] },
+  { id: "nav-prod", btn: "产能统计", win: "ProductionStatisticsPageWindow", panel: "_productionPage", note: "班次图表 + PLC 计数轮询", risk: "safe", files: ["ProductionStatisticsPageWindow.cs"] },
+  { id: "nav-cust", btn: "客户界面", win: "CustemerUI.Form1", panel: "独立窗体", note: "外部工程；可注入 ProvidePlcForMainUi", risk: "mid", files: [] },
+];
+
+const MODULES = [
+  {
+    id: "mod-comm", domain: "通讯 Communication", risk: "mid",
+    summary: "主 PLC 在 Form1；Socket/串口实例与任务执行在 Communications 配置控件。",
+    tip: "改服务内部实现可保持 CommunicationConfigControl 公开 API；改任务动作签名需同步 TaskPipelineRunner。",
+    deps: "PlcCommunicator · Form1 PlcProvider · TaskPipelineRunner",
+    files: [
+      { n: "CommunicationConfigControl.cs", r: "mid" },
+      { n: "SocketClientCommunicationService.cs", r: "safe" },
+      { n: "SocketServerCommunicationService.cs", r: "safe" },
+      { n: "SerialCommunicationService.cs", r: "safe" },
+      { n: "SocketResponseParser.cs", r: "safe" },
+    ]
+  },
+  {
+    id: "mod-alarm", domain: "报警 Alarm", risk: "mid",
+    summary: "地址轮询触发 → Form1 写历史库 / Top3 / 任务；弹窗与手动提示独立配置。",
+    tip: "改轮询逻辑注意 AlarmTriggered 事件契约；UI-only 改动相对安全。",
+    deps: "Form1 历史网格 · TaskPipelineRunner · PlcProvider",
+    files: [
+      { n: "AlarmAddressManagerControl.cs", r: "mid" },
+      { n: "AlarmPopupManagerControl.cs", r: "mid" },
+      { n: "ManualOperationPromptConfigControl.cs", r: "mid" },
+    ]
+  },
+  {
+    id: "mod-axis", domain: "轴运动 / 位置 Axis", risk: "mid",
+    summary: "调试页：轴组表 + 位置参数表成对；MultiAxis* 目前未接入 Form1。",
+    tip: "改轴名称解析会影响位置表；本次在 Form1 未发现 MultiAxisPositionControl 接入，但它仍参与编译且读取共享权限配置，不能据此保证无影响。",
+    deps: "PlcProvider · ExcelPositionCommentAxisGroupParser",
+    files: [
+      { n: "AxisMotionGroupTableControl.cs", r: "mid" },
+      { n: "PositionParameterTableControl.cs", r: "mid" },
+      { n: "MultiAxisPositionControl.cs", r: "safe" },
+      { n: "MultiAxisPositionModels.cs", r: "safe" },
+      { n: "ExcelPositionCommentAxisGroupParser.cs", r: "safe" },
+    ]
+  },
+  {
+    id: "mod-bool", domain: "布尔 / 按钮 Bool & Buttons", risk: "mid",
+    summary: "监控 DI、调试 DO、主页按钮布局；配置 JSON 驱动 Form1 重建。",
+    tip: "BoolSignal JSON 被监控与矩阵嵌入共用，改 schema 两边一起测。",
+    deps: "WinForms.Controls (PlcBoundButton/Switch/Labe) · Form1 重建",
+    files: [
+      { n: "BoolSignalCollectionControl.cs", r: "mid" },
+      { n: "BoolGroupControlTable.cs", r: "mid" },
+      { n: "BoolSignalMatrixEmbedControl.cs", r: "mid" },
+      { n: "ButtonDisplayConfigControl.cs", r: "mid" },
+      { n: "PlcBoundButtonGroupControl.cs", r: "safe" },
+      { n: "PlcBoolLabelDisplayConfigControl.cs", r: "mid" },
+      { n: "PlcValueTextBoxDisplayConfigControl.cs", r: "mid" },
+      { n: "PlcValueTextBoxControl.cs", r: "mid" },
+    ]
+  },
+  {
+    id: "mod-param", domain: "参数表 Parameters", risk: "mid",
+    summary: "ParameterTableControl×3（参数/HMI显示/按钮变量）+ 工艺实时配置与主页显示。",
+    tip: "改表格列/导入时保持配方与变更记录 schema；工艺实时改配置后测主页刷新。",
+    deps: "PlcProvider · Form1 主页显示",
+    files: [
+      { n: "ParameterTableControl.cs", r: "mid" },
+      { n: "ProcessRealtimeDataConfigControl.cs", r: "mid" },
+      { n: "ProcessRealtimeValueDisplayControl.cs", r: "mid" },
+    ]
+  },
+  {
+    id: "mod-station", domain: "工站 Station", risk: "mid",
+    summary: "配置管理器 → 生成/驱动 StationOperationStatusControl；主页与弹窗共用。",
+    tip: "改状态控件布局时同时看主页嵌入与工站弹窗 reparent。",
+    deps: "Form1 布局 · PlcProvider",
+    files: [
+      { n: "StationOperationConfigManagerControl.cs", r: "mid" },
+      { n: "StationOperationStatusControl.cs", r: "mid" },
+    ]
+  },
+  {
+    id: "mod-task", domain: "任务流水线 Task", risk: "high",
+    summary: "TaskSettings 编辑触发源与步骤；TaskPipelineRunner 运行时绑 PLC + 通讯。",
+    tip: "端到端回归：DI/DO/报警/参数/Socket 各触发一类；勿单独改 Runner 签名。",
+    deps: "CommunicationConfigControl · Alarm · Parameter · PlcProvider · Form1",
+    files: [
+      { n: "TaskSettingsControl.cs", r: "high" },
+      { n: "TaskPipelineRunner.cs", r: "high" },
+    ]
+  },
+  {
+    id: "mod-log", domain: "日志 / 授权", risk: "safe",
+    summary: "授权校验、应用日志 SQLite、查询对话框；与业务 PLC 弱耦合。",
+    tip: "日志显示与授权必须分别评估；授权是启动门禁，改校验或 license.key 格式需同步发证与部署流程，并验证启动成功和失败分支。",
+    deps: "Program 入口 · WMI/RSA · Sqlite",
+    files: [
+      { n: "LicenseAuthorization.cs", r: "safe" },
+      { n: "ApplicationLogStore.cs", r: "safe" },
+      { n: "ApplicationLogQueryDialog.cs", r: "safe" },
+    ]
+  },
+  {
+    id: "mod-uiutil", domain: "对话框 / UI 工具", risk: "safe",
+    summary: "半模态宿主、统一弹窗路由、DataGrid 禁排序。",
+    tip: "行为向改动为主；注意 IPageHostWindow 上的 EnableWindow 副作用。",
+    deps: "IPageHostWindow · 各页面窗体",
+    files: [
+      { n: "AppDialog.cs", r: "safe" },
+      { n: "SemiModalDialogHost.cs", r: "safe" },
+      { n: "DataGridViewNoSortHelper.cs", r: "safe" },
+      { n: "IPageHostWindow.cs", r: "mid" },
+    ]
+  },
+  {
+    id: "mod-pages", domain: "页面宿主 Windows", risk: "mid",
+    summary: "薄 SunnyUI 窗体，只负责 AttachPage；业务控件不在此创建。",
+    tip: "一般只改窗体 chrome；不要在此 new 业务控件以免与 Form1 双实例。",
+    deps: "Form1 面板字段 · IPageHostWindow",
+    files: [
+      { n: "MainPageWindow.cs", r: "safe" },
+      { n: "SystemConfigPageWindow.cs", r: "safe" },
+      { n: "DebugToolsPageWindow.cs", r: "safe" },
+      { n: "MonitorPageWindow.cs", r: "safe" },
+      { n: "RecordsPageWindow.cs", r: "safe" },
+      { n: "ProductionStatisticsPageWindow.cs", r: "safe" },
+    ]
+  },
+];
+
+const DETAIL = {
+  program: {
+    title: "Program.Main",
+    meta: "Program.cs · 入口",
+    desc: "STA 启动、未处理异常写 Logs/unhandled-exceptions.log，授权通过后 Run(HB_HMI_MainForm)。",
+    deps: "LicenseAuthorization · HB_HMI_MainForm",
+    tip: "只改启动流程/全局异常策略；不要在此放业务逻辑。",
+    files: ["Program.cs"],
+    risk: "safe"
+  },
+  license: {
+    title: "LicenseAuthorization",
+    meta: "LicenseAuthorization.cs",
+    desc: "机器码 + RSA 校验 license.key；未授权弹窗输入。",
+    deps: "System.Management · Program 门禁",
+    tip: "相对隔离；改校验算法需同步发证工具。",
+    files: ["LicenseAuthorization.cs"],
+    risk: "safe"
+  },
+  form1: {
+    title: "HB_HMI_MainForm",
+    meta: "Form1.cs · 共享内核",
+    desc: "导航、角色 ACL、PLC 连接/心跳、双模式 PlcProvider、创建全部业务面板、打开卫星窗体、报警历史与产能轮询等。",
+    deps: "几乎所有控件 · SunnyUI · PlcConectCom · HB_CameraUI · CustemerUI · WinForms.Controls",
+    tip: "危险区。改导航/ProvidePlc*/定时器/角色前写清单并全路径冒烟。能下沉到 UserControl 的逻辑不要堆在 Form1。",
+    files: ["Form1.cs", "Form1.Designer.cs"],
+    risk: "high"
+  },
+};
+
+const CORES = [
+  { title: "Form1 / HB_HMI_MainForm", risk: "high", text: "生命周期、PLC、定时器、角色、全部接线。任何「看起来小」的改动都可能牵动多页。" },
+  { title: "PlcCommunicator + AddressParser", risk: "high", text: "所有读写路径；改公共 API 需全控件回归。" },
+  { title: "PlcProvider 双模式", risk: "high", text: "调试独占时主 UI/报警可能拿到 null；改切换逻辑必测两边。" },
+  { title: "Task ↔ Comm ↔ Alarm", risk: "high", text: "自动化跨域；改动作/触发源要端到端测。" },
+  { title: "IPageHostWindow 挂载", risk: "mid", text: "AttachPage 失败 → 空白页或控件重复。" },
+  { title: "JSON / DB 契约", risk: "mid", text: "*.config.json、AlarmHistory、布局库被多控件共享。" },
+  { title: "UserRole + RoleAuth.config", risk: "mid", text: "控制配置/调试/工站入口；改权限矩阵测各角色。" },
+];
+
+const EXTERNALS = [
+  { title: "PlcConectCom", risk: "ext", text: "DLL HintPath · Modbus TCP PlcCommunicator" },
+  { title: "PlcConectCom.WinForms.Controls", risk: "ext", text: "ProjectReference · PlcBoundButton / Switch / Labe" },
+  { title: "CustemerUI", risk: "ext", text: "ProjectReference · 客户窗体与嵌入模式" },
+  { title: "HB_CameraUI", risk: "ext", text: "DLL · TH_CamSet、IExternalPlcBridge、相机线程" },
+  { title: "SunnyUI", risk: "ext", text: "NuGet · UIForm / UIButton / 表格与页签" },
+];
+
+const TREE = `PlcConectCom.WinFormsTest/          ← 本 HMI (HB_HMI_V1.0.0.0)
+├── Program.cs                      入口 + 授权门禁
+├── Form1.cs / Form1.Designer.cs    ★ 外壳内核（高风险）
+├── IPageHostWindow.cs              页面挂载契约
+├── *PageWindow.cs                  薄宿主（主/配置/调试/监控/记录/产能）
+├── AppDialog.cs / SemiModal…       对话框工具
+│
+├── [通讯] CommunicationConfigControl + Socket*/Serial* + Parser
+├── [报警] AlarmAddress / AlarmPopup / ManualOperationPrompt
+├── [轴位] AxisMotionGroup / PositionParameter / MultiAxis*
+├── [布尔] BoolSignal* / BoolGroup / ButtonDisplay / PlcValue*
+├── [参数] ParameterTable / ProcessRealtime*
+├── [工站] StationOperationConfig / StationOperationStatus
+├── [任务] TaskSettingsControl / TaskPipelineRunner
+├── [日志] LicenseAuthorization / ApplicationLog*
+│
+└── 外部兄弟工程
+    ├── PlcConectCom/
+    ├── PlcConectCom.WinForms.Controls/
+    ├── CustemerUI/
+    └── HB_CameraUI/`;
+
+function riskTag(r) {
+  if (r === "safe") return '<span class="tag tag-safe">低</span>';
+  if (r === "mid") return '<span class="tag tag-mid">中</span>';
+  if (r === "high") return '<span class="tag tag-high">高</span>';
+  return '<span class="tag tag-ext">外部</span>';
+}
+function riskClass(r) {
+  if (r === "safe") return "tag-safe";
+  if (r === "mid") return "tag-mid";
+  if (r === "high") return "tag-high";
+  return "tag-ext";
+}
+
+function openDrawer(d) {
+  document.getElementById("d-title").textContent = d.title;
+  document.getElementById("d-meta").textContent = d.meta || "";
+  document.getElementById("d-desc").textContent = d.desc || d.summary || "";
+  document.getElementById("d-deps").textContent = d.deps || "—";
+  document.getElementById("d-tip").textContent = d.tip || "—";
+  const files = d.files || [];
+  document.getElementById("d-files").innerHTML = files.length
+    ? files.map(f => {
+        const name = typeof f === "string" ? f : f.n;
+        const r = typeof f === "string" ? (d.risk || "mid") : f.r;
+        return `<div style="margin:4px 0"><code style="font-family:var(--mono);font-size:0.8rem;color:#b8d4e8">${name}</code> ${riskTag(r)}</div>`;
+      }).join("")
+    : "—";
+  document.getElementById("drawer").classList.add("open");
+  document.getElementById("backdrop").classList.add("open");
+}
+
+function closeDrawer() {
+  document.getElementById("drawer").classList.remove("open");
+  document.getElementById("backdrop").classList.remove("open");
+  document.querySelectorAll(".selected").forEach(el => el.classList.remove("selected"));
+}
+
+document.getElementById("drawer-close").onclick = closeDrawer;
+document.getElementById("backdrop").onclick = closeDrawer;
+
+// Render nav
+const navGrid = document.getElementById("nav-grid");
+NAV.forEach(n => {
+  const el = document.createElement("div");
+  el.className = "nav-item";
+  el.dataset.id = n.id;
+  el.dataset.risk = n.risk;
+  el.dataset.search = [n.btn, n.win, n.panel, n.note, ...(n.files||[])].join(" ").toLowerCase();
+  el.innerHTML = `
+    <div class="btn">${n.btn}</div>
+    <div class="win">${n.win}</div>
+    <div class="panel">${n.panel}</div>
+    <div class="note">${n.note}</div>
+    <div style="margin-top:8px">${riskTag(n.risk)}</div>`;
+  el.onclick = () => {
+    document.querySelectorAll(".selected").forEach(x => x.classList.remove("selected"));
+    el.classList.add("selected");
+    openDrawer({
+      title: n.btn + " → " + n.win,
+      meta: n.panel,
+      desc: n.note,
+      deps: "Form1 创建面板后 AttachPage；内容不在 PageWindow 内 new",
+      tip: n.risk === "high" ? "涉及系统配置或调试独占，改完必测 PLC 双模式。" : "优先只改宿主窗体外观；业务改对应控件模块。",
+      files: n.files,
+      risk: n.risk
+    });
+  };
+  navGrid.appendChild(el);
+});
+
+// Render modules
+const modRoot = document.getElementById("modules");
+MODULES.forEach(m => {
+  const el = document.createElement("div");
+  el.className = "mod";
+  el.dataset.id = m.id;
+  el.dataset.risk = m.risk;
+  el.dataset.search = [m.domain, m.summary, m.deps, ...m.files.map(f => f.n)].join(" ").toLowerCase();
+  el.innerHTML = `
+    <div class="mod-head">
+      <h3>${m.domain}</h3>
+      <span class="risk ${riskClass(m.risk)}">${m.risk === "safe" ? "低风险" : m.risk === "mid" ? "中风险" : "高风险"}</span>
+    </div>
+    <div class="mod-body">
+      <div><strong>职责</strong> — ${m.summary}</div>
+      <div style="margin-top:8px"><strong>依赖</strong> — ${m.deps}</div>
+      <div style="margin-top:8px"><strong>建议</strong> — ${m.tip}</div>
+      <ul class="file-list">${m.files.map(f =>
+        `<li><span class="fn">${f.n}</span><span class="fr">${riskTag(f.r)}</span></li>`
+      ).join("")}</ul>
+    </div>`;
+  el.querySelector(".mod-head").onclick = (e) => {
+    e.stopPropagation();
+    const open = el.classList.toggle("open");
+    if (open) {
+      document.querySelectorAll(".selected").forEach(x => x.classList.remove("selected"));
+      el.classList.add("selected");
+      openDrawer({
+        title: m.domain,
+        meta: "业务模块 · " + (m.risk === "safe" ? "低风险" : m.risk === "mid" ? "中风险" : "高风险"),
+        desc: m.summary,
+        deps: m.deps,
+        tip: m.tip,
+        files: m.files,
+        risk: m.risk
+      });
+    }
+  };
+  modRoot.appendChild(el);
+});
+
+// Startup nodes
+document.querySelectorAll("#startup-flow .node").forEach(node => {
+  node.onclick = () => {
+    document.querySelectorAll(".selected").forEach(x => x.classList.remove("selected"));
+    node.classList.add("selected");
+    openDrawer(DETAIL[node.dataset.id]);
+  };
+});
+
+// Cores / externals
+const cores = document.getElementById("cores");
+CORES.forEach(c => {
+  const el = document.createElement("div");
+  el.className = "dep " + (c.risk === "high" ? "high" : "mid");
+  el.innerHTML = `<h4>${c.title} ${riskTag(c.risk)}</h4><p>${c.text}</p>`;
+  cores.appendChild(el);
+});
+const ex = document.getElementById("externals");
+EXTERNALS.forEach(c => {
+  const el = document.createElement("div");
+  el.className = "dep";
+  el.innerHTML = `<h4>${c.title} ${riskTag("ext")}</h4><p>${c.text}</p>`;
+  ex.appendChild(el);
+});
+
+document.getElementById("tree").textContent = TREE;
+
+// Filter + search
+let filterRisk = "all";
+function applyFilter() {
+  const q = document.getElementById("search").value.trim().toLowerCase();
+  const match = (el) => {
+    const riskOk = filterRisk === "all" || el.dataset.risk === filterRisk;
+    const searchOk = !q || (el.dataset.search || el.textContent).toLowerCase().includes(q);
+    return riskOk && searchOk;
+  };
+  document.querySelectorAll(".nav-item, .mod, #startup-flow .node").forEach(el => {
+    el.classList.toggle("dim", !match(el));
+  });
+  // Highlight tree lines
+  if (q) {
+    const lines = TREE.split("\n").map(line =>
+      line.toLowerCase().includes(q)
+        ? line.replace(new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "ig"), '<span class="highlight">$1</span>')
+        : line
+    );
+    document.getElementById("tree").innerHTML = lines.join("\n");
+  } else {
+    document.getElementById("tree").textContent = TREE;
+  }
+}
+document.getElementById("search").addEventListener("input", applyFilter);
+document.querySelectorAll(".chip[data-filter]").forEach(chip => {
+  chip.addEventListener("click", () => {
+    document.querySelectorAll(".chip[data-filter]").forEach(c => c.classList.remove("active"));
+    chip.classList.add("active");
+    filterRisk = chip.dataset.filter;
+    applyFilter();
+  });
+});
+
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") closeDrawer();
+});
+
+const CHANGE_GUIDES = [
+  ['界面布局 / 页面挂载','Form1.cs；目标 *PageWindow.cs 与 .Designer.cs；IPageHostWindow.cs','AttachPage；页面 Parent / Dock / 生命周期','Form1 → 页面宿主 → 原有面板。记录和产能业务在 Form1，修改薄宿主并不能改变业务逻辑。','反复打开关闭页面；主页与工站弹窗切换；缩放后检查空白、重复控件、尺寸累积。'],
+  ['PLC 连接 / 调试独占','Form1.cs:2211、2218、4277；MainPlc.config.json','ProvidePlcForMainUi；ProvidePlcForDebugToolsPage','影响依赖 PlcProvider 的显示、报警、通信、任务；主页部分按钮存在独占模式例外。','连接失败、断线重连；进入与退出调试；确认主 UI、报警、任务暂停与恢复符合现有设计。'],
+  ['任务触发 / 执行步骤','TaskSettingsControl.cs；TaskPipelineRunner.cs:182；Form1.cs:903–922','GetAutomatedTasks；BindRunner；ExecuteTaskActionAsync；TaskStepExecuteResult','设置 → Runner → 执行动作委托 → 通信；报警通过 Form1 事件订阅触发 Runner。','每个改动涉及的触发类型；启动、停止、重复启动、步骤失败、PLC 不可用；旧 TaskSettings.config.json 迁移及新 TaskAutomation.config.json 重启加载。'],
+  ['Socket / 串口 / 响应解析','CommunicationConfigControl.cs:224；SocketClientCommunicationService.cs；SocketServerCommunicationService.cs；SerialCommunicationService.cs；SocketResponseParser.cs','ExecuteTaskActionAsync 与返回结果；CommunicationInstances.config.json','通信实现变化会影响任务动作及结果存储；解析器变化会影响标记提取。','连接和断开、超时、空回复、分隔符与标记；通过任务执行同一动作，检查结果值与异常反馈。'],
+  ['报警 / 历史记录','AlarmAddressManagerControl.cs:92；AlarmPopupManagerControl.cs；ManualOperationPromptConfigControl.cs；Form1.cs:4666','AlarmTriggered；ActiveAlarmsSnapshotUpdated；AlarmAddress.config.json；AlarmHistory.db','报警 → Form1 历史与主页；报警 → Runner；弹窗与手动提示另有配置。','报警出现、保持、解除、重复触发；任务响应；历史查询与导出；调试模式切换后的恢复。'],
+  ['轴组 / 位置参数','AxisMotionGroupTableControl.cs；PositionParameterTableControl.cs；ExcelPositionCommentAxisGroupParser.cs','PlcProvider；轴组名 / Excel 注释解析；AxisMotionGroup.config.json；PositionParameterTable.config.json','调试 PLC 提供器 → 轴组与位置表；共享名称解析需保持一致。','名称匹配、导入异常数据、读写数值类型、调试页关闭恢复；核实选定轴和实际目标地址一致。'],
+  ['布尔监控 / 输入矩阵','BoolSignalCollectionControl.cs；BoolSignalMatrixEmbedControl.cs；Form1.cs:845–855','共享 BoolSignalCollection.config.json；两套 PlcProvider','一个配置由监控页和调试输入矩阵读取；改字段或排列需两边验证。','保存并重载；监控与调试矩阵名称、地址、状态一致；空配置、坏配置、断线恢复。'],
+  ['主页按钮 / 状态 / 文本显示','ButtonDisplayConfigControl.cs；PlcBoolLabelDisplayConfigControl.cs；PlcValueTextBoxDisplayConfigControl.cs；PlcValueTextBoxControl.cs；Form1.cs','ConfigurationsChanged → Form1 重建；对应显示配置 JSON','配置修改不仅影响编辑页，还会重建主页控件与 PLC 绑定。','保存后立即刷新；重启后恢复；控件释放与轮询；布尔、数值读写及调试独占例外。'],
+  ['参数 / 工艺实时值','ParameterTableControl.cs；ProcessRealtimeDataConfigControl.cs；ProcessRealtimeValueDisplayControl.cs','ParameterTable.config.json（按 storageKey 区分）；ProcessRealtimeData.config.json','参数表存在多个实例，需核对存储键；实时配置影响主页显示。','三个参数表配置互不覆盖；导入导出；旧配置加载；数值格式、写入和主页刷新。'],
+  ['工站配置 / 状态','StationOperationConfigManagerControl.cs；StationOperationStatusControl.cs；Form1.cs:925–927','ConfigurationsChanged；StationOperation.config.json','配置事件 → Form1 → 工站状态控件；主页与弹窗共用面板。','增删改配置、保存重启；主页面与工站弹窗来回切换；PLC 断线后显示恢复。'],
+  ['日志 / 授权 / 公共对话框','ApplicationLogStore.cs；ApplicationLogQueryDialog.cs；LicenseAuthorization.cs；AppDialog.cs；SemiModalDialogHost.cs','Logs/AppLog_yyyy-MM-dd.db；Program 授权门禁；页面窗口启停','日志存储被查询消费；授权影响能否启动；半模态工具影响多个页面的对话框行为。','日志写入与跨日期查询；授权通过、失败、取消；对话框确定、取消、关闭后宿主恢复可操作。']
+];
+const target = document.getElementById('change-target');
+CHANGE_GUIDES.forEach((g,i) => target.add(new Option(g[0], String(i))));
+function showImpact() {
+  const g = CHANGE_GUIDES[Number(target.value)];
+  const view = document.getElementById('impact-view');
+  view.replaceChildren();
+  ['优先定位','保持稳定的契约','连带影响链','建议回归'].forEach((label,i) => {
+    const p = document.createElement('p');
+    const strong = document.createElement('strong');
+    strong.textContent = label + '：';
+    p.append(strong, document.createTextNode(g[i+1]));
+    view.append(p);
+  });
+}
+target.addEventListener('change', showImpact);
+showImpact();
+document.querySelectorAll('.chip[data-filter], .node, .nav-item, .mod-head').forEach(el => {
+  el.tabIndex = 0;
+  el.setAttribute('role','button');
+  el.addEventListener('keydown', e => { if(e.key === 'Enter' || e.key === ' ') { e.preventDefault(); el.click(); } });
+});
+</script>
+</body>
+</html>

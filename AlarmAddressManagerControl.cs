@@ -40,19 +40,8 @@ public sealed class AlarmAddressManagerControl : UserControl
         Dock = DockStyle.Fill,
         AllowUserToAddRows = false,
         AllowUserToDeleteRows = false,
+        AllowUserToResizeColumns = false,
         RowHeadersVisible = false,
-        SelectionMode = DataGridViewSelectionMode.FullRowSelect,
-        MultiSelect = false,
-        AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill
-    };
-
-    private readonly DataGridView _alarmGrid = new()
-    {
-        Dock = DockStyle.Fill,
-        AllowUserToAddRows = false,
-        AllowUserToDeleteRows = false,
-        RowHeadersVisible = false,
-        ReadOnly = true,
         SelectionMode = DataGridViewSelectionMode.FullRowSelect,
         MultiSelect = false,
         AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill
@@ -65,28 +54,37 @@ public sealed class AlarmAddressManagerControl : UserControl
     private readonly Button _btnSave = new() { Text = "保存本地", Width = 84 };
     private readonly Button _btnCheckAlarm = new() { Text = "检查报警", Width = 84 };
     private readonly Button _btnAutoMonitor = new() { Text = "自动监控:关", Width = 92 };
-    private readonly Button _btnClearAlarmList = new() { Text = "清空列表", Width = 84 };
-    private readonly System.Windows.Forms.Timer _monitorTimer = new() { Interval = 1000 };
+    private readonly System.Windows.Forms.Timer _monitorTimer = new() { Interval = 500 };
 
     private readonly FlowLayoutPanel _actionsRow = new()
     {
         Dock = DockStyle.Top,
         AutoSize = true,
-        WrapContents = false,
+        AutoSizeMode = AutoSizeMode.GrowAndShrink,
+        WrapContents = true,
         Padding = new Padding(0, 0, 0, 4)
     };
 
     private readonly string _defaultConfigPath;
-    private readonly HashSet<string> _activeAlarms = [];
+    /// <summary>当前仍为 ON 的报警会话；键为 报警代码|地址，值为首次变为 ON 的时间（用于主页实时列表）。</summary>
+    private readonly Dictionary<string, (string Name, string Code, DateTime FirstSeen)> _activeAlarmSessions = [];
     private bool _suspendAutoSave;
     private bool _isChecking;
     private bool _canAddDelete = true;
     private bool _canModify = true;
     private bool _editUnlocked;
 
-    public AlarmAddressManagerControl()
+    /// <summary>
+    /// 构造报警地址管理控件。
+    /// 不传 <paramref name="storageKey"/> 时使用默认配置文件 AlarmAddress.config.json（主 PLC）；
+    /// 传入时使用 AlarmAddress.{storageKey}.config.json（子 PLC 每设备独立配置）。
+    /// </summary>
+    public AlarmAddressManagerControl(string? storageKey = null)
     {
-        _defaultConfigPath = Path.Combine(AppContext.BaseDirectory, DefaultConfigFileName);
+        string fileName = string.IsNullOrWhiteSpace(storageKey)
+            ? DefaultConfigFileName
+            : $"AlarmAddress.{storageKey}.config.json";
+        _defaultConfigPath = Path.Combine(AppContext.BaseDirectory, fileName);
         BuildUi();
         BindEvents();
         LoadDefaultConfig();
@@ -102,6 +100,9 @@ public sealed class AlarmAddressManagerControl : UserControl
 
     public event Action<AlarmTriggeredEvent>? AlarmTriggered;
 
+    /// <summary>每次轮询结束后发出当前仍为 ON 的报警列表（主页实时表格据此刷新；无报警则为空）。</summary>
+    public event Action<IReadOnlyList<AlarmTriggeredEvent>>? ActiveAlarmsSnapshotUpdated;
+
     public void SetPermission(bool canAddDelete, bool canModify)
     {
         _canAddDelete = canAddDelete;
@@ -115,7 +116,6 @@ public sealed class AlarmAddressManagerControl : UserControl
         _btnSave.Enabled = canModify && _editUnlocked;
         _btnCheckAlarm.Enabled = canModify;
         _btnAutoMonitor.Enabled = canModify;
-        _btnClearAlarmList.Enabled = canModify;
         _btnEditAuth.Enabled = canModify;
         _btnEditAuth.Text = _editUnlocked ? "编辑锁定" : "编辑解锁";
         _grid.ReadOnly = !_editUnlocked;
@@ -178,31 +178,15 @@ public sealed class AlarmAddressManagerControl : UserControl
     {
         _grid.DefaultCellStyle.SelectionBackColor = Color.Gainsboro;
         _grid.DefaultCellStyle.SelectionForeColor = Color.Black;
-        _alarmGrid.DefaultCellStyle.SelectionBackColor = Color.Gainsboro;
-        _alarmGrid.DefaultCellStyle.SelectionForeColor = Color.Black;
 
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "报警名称", FillWeight = 30 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "报警代码", FillWeight = 20 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "数据地址", FillWeight = 30 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "数据显示", FillWeight = 20, ReadOnly = true });
 
-        _alarmGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "报警时间", FillWeight = 30 });
-        _alarmGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "报警内容", FillWeight = 45 });
-        _alarmGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "报警代码", FillWeight = 25 });
+        _actionsRow.Controls.AddRange([_btnEditAuth, _btnAdd, _btnDelete, _btnLoad, _btnSave, _btnCheckAlarm, _btnAutoMonitor]);
 
-        _actionsRow.Controls.AddRange([_btnEditAuth, _btnAdd, _btnDelete, _btnLoad, _btnSave, _btnCheckAlarm, _btnAutoMonitor, _btnClearAlarmList]);
-
-        var split = new SplitContainer
-        {
-            Dock = DockStyle.Fill,
-            Orientation = Orientation.Horizontal,
-            SplitterDistance = 260
-        };
-
-        split.Panel1.Controls.Add(_grid);
-        split.Panel2.Controls.Add(_alarmGrid);
-
-        Controls.Add(split);
+        Controls.Add(_grid);
         Controls.Add(_actionsRow);
     }
 
@@ -238,7 +222,6 @@ public sealed class AlarmAddressManagerControl : UserControl
         _btnSave.Click += (_, _) => SaveDefaultConfig();
         _btnCheckAlarm.Click += async (_, _) => await CheckAlarmsAsync();
         _btnAutoMonitor.Click += (_, _) => ToggleAutoMonitor();
-        _btnClearAlarmList.Click += (_, _) => _alarmGrid.Rows.Clear();
         _monitorTimer.Tick += async (_, _) => await CheckAlarmsAsync();
 
         _grid.CellValueChanged += (_, e) =>
@@ -365,11 +348,18 @@ public sealed class AlarmAddressManagerControl : UserControl
 
         var plc = PlcProvider?.Invoke() ?? PlcInstance;
         if (plc is null || !plc.IsConnected)
+        {
+            ActiveAlarmsSnapshotUpdated?.Invoke([]);
             return;
+        }
 
         _isChecking = true;
         try
         {
+            // 先收集本轮要读的行，再按地址块批量读取：
+            // 逐条 ReadBoolAsync 时 N 条报警 = N 次 Modbus 往返（全局信号量串行），
+            // 地址多时单轮可达数秒，是主页面实时报警滞后的主因
+            var rowInfos = new List<(DataGridViewRow Row, string AlarmName, string AlarmCodeRaw, string Address)>();
             foreach (DataGridViewRow row in _grid.Rows)
             {
                 string alarmName = Convert.ToString(row.Cells[0].Value)?.Trim() ?? string.Empty;
@@ -388,51 +378,75 @@ public sealed class AlarmAddressManagerControl : UserControl
                     continue;
                 }
 
-                bool state;
-                try
+                rowInfos.Add((row, alarmName, alarmCodeRaw, alarmAddress));
+            }
+
+            Dictionary<string, bool> states = await PlcBoolBatchReader.ReadBoolStatesAsync(
+                plc, rowInfos.Select(x => x.Address));
+
+            foreach (var info in rowInfos)
+            {
+                if (!states.TryGetValue(info.Address, out bool state))
                 {
-                    state = await plc.ReadBoolAsync(alarmAddress);
-                    row.Cells[3].Value = state ? "ON" : "OFF";
-                }
-                catch (Exception ex)
-                {
-                    row.Cells[3].Value = "ERR";
-                    LogAction?.Invoke($"报警地址读取失败 {alarmAddress}: {ex.Message}");
+                    info.Row.Cells[3].Value = "ERR";
+                    LogAction?.Invoke($"报警地址读取失败 {info.Address}");
                     continue;
                 }
 
-                string alarmCode = string.IsNullOrWhiteSpace(alarmCodeRaw) ? alarmAddress : alarmCodeRaw;
-                string key = $"{alarmCode}|{alarmAddress}";
+                info.Row.Cells[3].Value = state ? "ON" : "OFF";
+
+                string alarmCode = string.IsNullOrWhiteSpace(info.AlarmCodeRaw) ? info.Address : info.AlarmCodeRaw;
+                string key = $"{alarmCode}|{info.Address}";
 
                 if (state)
                 {
-                    if (_activeAlarms.Contains(key))
+                    if (_activeAlarmSessions.ContainsKey(key))
                         continue;
 
-                    _activeAlarms.Add(key);
+                    DateTime firstSeen = DateTime.Now;
+                    _activeAlarmSessions[key] = (info.AlarmName, alarmCode, firstSeen);
                     var alarmEvent = new AlarmTriggeredEvent
                     {
-                        AlarmTime = DateTime.Now,
-                        AlarmName = alarmName,
+                        AlarmTime = firstSeen,
+                        AlarmName = info.AlarmName,
                         AlarmCode = alarmCode
                     };
-                    _alarmGrid.Rows.Insert(0,
-                        alarmEvent.AlarmTime.ToString("yyyy-MM-dd HH:mm:ss"),
-                        alarmEvent.AlarmName,
-                        alarmEvent.AlarmCode);
 
                     AlarmTriggered?.Invoke(alarmEvent);
                 }
                 else
                 {
-                    _activeAlarms.Remove(key);
+                    _activeAlarmSessions.Remove(key);
                 }
             }
+
+            PublishActiveAlarmsSnapshot();
         }
         finally
         {
             _isChecking = false;
         }
+    }
+
+    private void PublishActiveAlarmsSnapshot()
+    {
+        if (_activeAlarmSessions.Count == 0)
+        {
+            ActiveAlarmsSnapshotUpdated?.Invoke([]);
+            return;
+        }
+
+        var list = _activeAlarmSessions.Values
+            .Select(v => new AlarmTriggeredEvent
+            {
+                AlarmTime = v.FirstSeen,
+                AlarmName = v.Name,
+                AlarmCode = v.Code
+            })
+            .OrderByDescending(x => x.AlarmTime)
+            .ToList();
+
+        ActiveAlarmsSnapshotUpdated?.Invoke(list);
     }
 
     private static bool IsSupportedBoolAddress(string address)

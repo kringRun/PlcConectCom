@@ -22,18 +22,19 @@ file sealed class ProcessRealtimeDataConfigFile
 public sealed class ProcessRealtimeDataConfigControl : UserControl
 {
     public const string ConfigFileName = "ProcessRealtimeData.config.json";
-    private readonly string _configPath = Path.Combine(AppContext.BaseDirectory, ConfigFileName);
+    private readonly string _configPath;
     private readonly DataGridView _grid = new()
     {
         Dock = DockStyle.Fill,
         AllowUserToAddRows = false,
         AllowUserToDeleteRows = false,
+        AllowUserToResizeColumns = false,
         RowHeadersVisible = false,
         SelectionMode = DataGridViewSelectionMode.FullRowSelect,
         MultiSelect = false,
         AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill
     };
-    private readonly FlowLayoutPanel _toolbar = new() { Dock = DockStyle.Top, Height = 40, Padding = new Padding(0, 0, 0, 4), WrapContents = false };
+    private readonly FlowLayoutPanel _toolbar = new() { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, MinimumSize = new Size(0, 40), Padding = new Padding(0, 0, 0, 4), WrapContents = true };
     private readonly Button _btnEditAuth = new() { Text = "编辑解锁", Width = 80 };
     private readonly Button _btnAdd = new() { Text = "新增", Width = 70 };
     private readonly Button _btnDelete = new() { Text = "删除", Width = 70 };
@@ -52,19 +53,36 @@ public sealed class ProcessRealtimeDataConfigControl : UserControl
     public Func<bool>? EditPermissionRequest { get; set; }
     public event EventHandler? ConfigurationChanged;
 
-    public ProcessRealtimeDataConfigControl()
+    public ProcessRealtimeDataConfigControl() : this(null) { }
+
+    public ProcessRealtimeDataConfigControl(string? storageKey)
     {
+        string fileName = ConfigFileName;
+        if (!string.IsNullOrWhiteSpace(storageKey))
+        {
+            string safeKey = string.Concat(storageKey.Where(char.IsLetterOrDigit));
+            if (!string.IsNullOrWhiteSpace(safeKey))
+                fileName = $"{Path.GetFileNameWithoutExtension(ConfigFileName)}.{safeKey}{Path.GetExtension(ConfigFileName)}";
+        }
+        _configPath = Path.Combine(AppContext.BaseDirectory, fileName);
         BuildUi();
         BindEvents();
         LoadConfigToGrid();
         SetPermission(canAddDelete: true, canModify: true);
     }
 
-    public static IReadOnlyList<ProcessRealtimeDataItem> LoadConfiguredItems()
+    public static IReadOnlyList<ProcessRealtimeDataItem> LoadConfiguredItems(string? storageKey = null)
     {
         try
         {
-            string path = Path.Combine(AppContext.BaseDirectory, ConfigFileName);
+            string fileName = ConfigFileName;
+            if (!string.IsNullOrWhiteSpace(storageKey))
+            {
+                string safeKey = string.Concat(storageKey.Where(char.IsLetterOrDigit));
+                if (!string.IsNullOrWhiteSpace(safeKey))
+                    fileName = $"{Path.GetFileNameWithoutExtension(ConfigFileName)}.{safeKey}{Path.GetExtension(ConfigFileName)}";
+            }
+            string path = Path.Combine(AppContext.BaseDirectory, fileName);
             if (!File.Exists(path))
                 return Array.Empty<ProcessRealtimeDataItem>();
 

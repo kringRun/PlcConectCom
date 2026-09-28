@@ -2,6 +2,7 @@ using System.Management;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Win32;
 
 namespace PlcConectCom.WinFormsTest;
 
@@ -49,7 +50,7 @@ oQIDAQAB
 
         string? localCode = LoadLocalAuthCode();
         using var dialog = new LicenseAuthDialog(GetMachineCode(), localCode ?? string.Empty);
-        if (dialog.ShowDialog(owner) != DialogResult.OK)
+        if (AppDialog.ShowDialog(dialog, owner) != DialogResult.OK)
             return false;
 
         if (!TryValidateAuthCode(dialog.AuthCode.Trim(), out DateTime exp, out string? error))
@@ -124,21 +125,61 @@ oQIDAQAB
         return string.Empty;
     }
 
-    private static string GetMachineGuid()
+    /// <summary>
+    /// 机器码对外展示值。历史授权码（含当前在用的 license.key）均按
+    /// 「32 位注册表视图」下的 MachineGuid 计算签发，故规范值固定取该视图。
+    /// </summary>
+    public static string GetMachineCode() => GetMachineCodeCandidates()[0];
+
+    /// <summary>
+    /// 机器码候选值，按优先级排序，第 0 项为规范值（用于显示与发码）。
+    /// 背景：HKLM\SOFTWARE 在 32 位进程内会被注册表重定向到 WOW6432Node，
+    /// 而多数机器的 WOW6432Node\Microsoft\Cryptography 下并没有 MachineGuid。
+    /// 于是同一份代码编译成 AnyCPU（64 位进程）与 x86（32 位进程）时，
+    /// GUID 一项取值不同 → 整个 SHA256 机器码完全不同 → 已授权机器被判为不匹配。
+    /// 这里用显式 RegistryView 把两种视图都算出来，校验时任一命中即视为同机。
+    /// </summary>
+    public static IReadOnlyList<string> GetMachineCodeCandidates()
+    {
+        // 与注册表视图无关的硬件指纹只取一次（WMI 查询开销较大）
+        string head = string.Join("|", new[]
+        {
+            $"CPU={GetCpuSerial()}",
+            $"BASEBOARD={GetBaseBoardSerial()}",
+            $"BIOS={GetBiosSerial()}",
+            $"SYSDRV={GetSystemDriveSerial()}"
+        });
+        string tail = $"|NAME={Environment.MachineName}";
+
+        (string guid32, string guid64) = GetMachineGuidsByView();
+        var codes = new List<string>(2);
+        foreach (string guid in new[] { guid32, guid64 })
+        {
+            string fingerprint = $"{head}|GUID={guid}{tail}".ToUpperInvariant();
+            string code = ComputeSha256Hex(fingerprint).ToUpperInvariant();
+            if (!codes.Contains(code, StringComparer.OrdinalIgnoreCase))
+                codes.Add(code);
+        }
+
+        return codes;
+    }
+
+    private static (string View32, string View64) GetMachineGuidsByView()
+        => (ReadMachineGuid(RegistryView.Registry32), ReadMachineGuid(RegistryView.Registry64));
+
+    private static string ReadMachineGuid(RegistryView view)
     {
         try
         {
-            object? value = Microsoft.Win32.Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Cryptography", "MachineGuid", null);
-            string machineGuid = Convert.ToString(value)?.Trim() ?? string.Empty;
-            if (!string.IsNullOrWhiteSpace(machineGuid))
-                return machineGuid;
+            using RegistryKey baseKey = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, view);
+            using RegistryKey? key = baseKey.OpenSubKey(@"SOFTWARE\Microsoft\Cryptography", writable: false);
+            return Convert.ToString(key?.GetValue("MachineGuid"))?.Trim() ?? string.Empty;
         }
         catch
         {
-            // ignore and fallback
+            // 视图不存在或无权限时按空值处理，与历史算法保持一致
+            return string.Empty;
         }
-
-        return string.Empty;
     }
 
     private static string QueryWmiFirstValue(string wmiClass, string propertyName)
@@ -159,22 +200,6 @@ oQIDAQAB
         }
 
         return string.Empty;
-    }
-
-    public static string GetMachineCode()
-    {
-        var parts = new[]
-        {
-            $"CPU={GetCpuSerial()}",
-            $"BASEBOARD={GetBaseBoardSerial()}",
-            $"BIOS={GetBiosSerial()}",
-            $"SYSDRV={GetSystemDriveSerial()}",
-            $"GUID={GetMachineGuid()}",
-            $"NAME={Environment.MachineName}"
-        };
-
-        string fingerprint = string.Join("|", parts).ToUpperInvariant();
-        return ComputeSha256Hex(fingerprint).ToUpperInvariant();
     }
 
     // 供离线授权工具使用：使用私钥签发授权码（不要在客户端调用）
@@ -213,7 +238,7 @@ oQIDAQAB
             }
         }
 
-        if (!string.Equals(cpuCode, GetMachineCode(), StringComparison.OrdinalIgnoreCase))
+        if (!GetMachineCodeCandidates().Any(code => string.Equals(code, cpuCode, StringComparison.OrdinalIgnoreCase)))
         {
             error = "授权码与当前机器不匹配。";
             return false;

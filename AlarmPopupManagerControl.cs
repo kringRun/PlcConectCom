@@ -145,6 +145,7 @@ public sealed class AlarmPopupManagerControl : UserControl
         Dock = DockStyle.Fill,
         AllowUserToAddRows = false,
         AllowUserToDeleteRows = false,
+        AllowUserToResizeColumns = false,
         RowHeadersVisible = false,
         SelectionMode = DataGridViewSelectionMode.FullRowSelect,
         MultiSelect = false,
@@ -163,7 +164,8 @@ public sealed class AlarmPopupManagerControl : UserControl
     {
         Dock = DockStyle.Top,
         AutoSize = true,
-        WrapContents = false,
+        AutoSizeMode = AutoSizeMode.GrowAndShrink,
+        WrapContents = true,
         Padding = new Padding(0, 0, 0, 4)
     };
 
@@ -176,9 +178,17 @@ public sealed class AlarmPopupManagerControl : UserControl
     private bool _canModify = true;
     private bool _editUnlocked;
 
-    public AlarmPopupManagerControl()
+    /// <summary>
+    /// 构造报警弹窗管理控件。
+    /// 不传 <paramref name="storageKey"/> 时使用默认配置文件 AlarmPopup.config.json（主 PLC）；
+    /// 传入时使用 AlarmPopup.{storageKey}.config.json（子 PLC 每设备独立配置）。
+    /// </summary>
+    public AlarmPopupManagerControl(string? storageKey = null)
     {
-        _defaultConfigPath = Path.Combine(AppContext.BaseDirectory, DefaultConfigFileName);
+        string fileName = string.IsNullOrWhiteSpace(storageKey)
+            ? DefaultConfigFileName
+            : $"AlarmPopup.{storageKey}.config.json";
+        _defaultConfigPath = Path.Combine(AppContext.BaseDirectory, fileName);
         BuildUi();
         BindEvents();
         LoadDefaultConfig();
@@ -412,22 +422,20 @@ public sealed class AlarmPopupManagerControl : UserControl
         try
         {
             List<AlarmPopupGroupDefinition> groups = BuildGroupsFromGrid();
-            foreach (AlarmPopupGroupDefinition g in groups)
-            {
-                string addr = g.TriggerAddress?.Trim() ?? string.Empty;
-                if (string.IsNullOrWhiteSpace(addr) || !IsSupportedBoolAddress(addr))
-                    continue;
 
+            // 弹窗触发位统一批量读取（同报警配置页：逐条读会因 Modbus 串行往返造成弹窗滞后）
+            List<AlarmPopupGroupDefinition> validGroups = groups
+                .Where(g => !string.IsNullOrWhiteSpace(g.TriggerAddress) && IsSupportedBoolAddress(g.TriggerAddress))
+                .ToList();
+            Dictionary<string, bool> triggerStates = await PlcBoolBatchReader.ReadBoolStatesAsync(
+                plc, validGroups.Select(g => g.TriggerAddress!.Trim())).ConfigureAwait(true);
+
+            foreach (AlarmPopupGroupDefinition g in validGroups)
+            {
+                string addr = g.TriggerAddress!.Trim();
                 string key = GroupKey(addr);
-                bool on;
-                try
-                {
-                    on = await plc.ReadBoolAsync(addr).ConfigureAwait(true);
-                }
-                catch
-                {
+                if (!triggerStates.TryGetValue(addr, out bool on))
                     continue;
-                }
 
                 if (!on)
                 {

@@ -101,6 +101,7 @@ partial class SystemConfigPageWindow
         _gridParameter.Dock = DockStyle.Fill;
         _gridParameter.AllowUserToAddRows = false;
         _gridParameter.AllowUserToDeleteRows = false;
+        _gridParameter.AllowUserToResizeColumns = false;
         _gridParameter.ReadOnly = true;
         _gridParameter.RowHeadersVisible = false;
         _gridParameter.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
@@ -126,6 +127,7 @@ partial class SystemConfigPageWindow
         _gridHmi.Dock = DockStyle.Fill;
         _gridHmi.AllowUserToAddRows = false;
         _gridHmi.AllowUserToDeleteRows = false;
+        _gridHmi.AllowUserToResizeColumns = false;
         _gridHmi.ReadOnly = true;
         _gridHmi.RowHeadersVisible = false;
         _gridHmi.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
@@ -151,6 +153,7 @@ partial class SystemConfigPageWindow
         _gridButtonVar.Dock = DockStyle.Fill;
         _gridButtonVar.AllowUserToAddRows = false;
         _gridButtonVar.AllowUserToDeleteRows = false;
+        _gridButtonVar.AllowUserToResizeColumns = false;
         _gridButtonVar.ReadOnly = true;
         _gridButtonVar.RowHeadersVisible = false;
         _gridButtonVar.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
@@ -176,6 +179,7 @@ partial class SystemConfigPageWindow
         _gridAlarm.Dock = DockStyle.Fill;
         _gridAlarm.AllowUserToAddRows = false;
         _gridAlarm.AllowUserToDeleteRows = false;
+        _gridAlarm.AllowUserToResizeColumns = false;
         _gridAlarm.ReadOnly = true;
         _gridAlarm.RowHeadersVisible = false;
         _gridAlarm.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;

@@ -2,6 +2,18 @@
 	"folders": [
 		{
 			"path": "."
+		},
+		{
+			"path": "../HB_CameraUI/HB_CameraUI"
+		},
+		{
+			"path": "../PlcConectCom"
+		},
+		{
+			"path": "../CustemerUI"
+		},
+		{
+			"path": "../PlcConectCom.WinForms.Controls"
 		}
 	],
 	"settings": {
